@@ -36,6 +36,7 @@ import com.vrgames.deepsea.core.Sea
 import com.vrgames.deepsea.core.Thing
 import com.vrgames.deepsea.core.Vec3
 import com.vrgames.deepsea.core.Zone
+import kotlin.math.PI
 import kotlin.math.sin
 
 /** What a pinch on the tank means. */
@@ -113,7 +114,12 @@ class SeaView(private val models: Map<String, Entity>, private val tex: Map<Stri
     private class ThingView(val e: Entity, val body: Entity, val shadow: Entity, val halo: Entity?) {
         var dark = false
         var yaw = 0f
+        /** Seconds into its performance on a first meeting, or negative. */
+        var show = -1.0
     }
+
+    /** A first meeting: the creature rises, turns right round and shows itself, shedding light. */
+    fun perform(key: String) { views[key]?.show = 0.0 }
 
     init {
         root.addChild(sea)
@@ -421,6 +427,23 @@ class SeaView(private val models: Map<String, Entity>, private val tex: Map<Stri
         val swims = s.swim > 0
         val base = if (swims) Looks.height(s.id) * Looks.mid(s.id) else 0f
         v.e.setPos(Vector3(t.at.x.toFloat(), t.at.y.toFloat() - base, 0f))
+        if (v.show >= 0) {
+            v.show += dt
+            val k = (v.show / PERFORM_S).coerceIn(0.0, 1.0)
+            val up = sin(k * PI)
+            // Turn once about itself while lifting and growing a little, then settle back.
+            val h = Looks.height(s.id) * (1f + 0.35f * up.toFloat())
+            v.e.setPos(Vector3(t.at.x.toFloat(), (t.at.y - base + up * 0.05).toFloat(), (up * 0.1).toFloat()))
+            v.body.transform().eulerAngles = EulerAngles(0f, v.yaw + (360 * ease(k)).toFloat(), 0f)
+            v.body.transform().setScaleVector(Vector3(h))
+            if ((v.show * 5).toInt() != ((v.show - dt) * 5).toInt()) glitter.emit(Vec3(t.at.x, t.at.y, 0.06), 7, 0.07, 1.1, 0.003f)
+            if (k >= 1.0) {
+                v.show = -1.0
+                v.body.transform().setScaleVector(Vector3(Looks.height(s.id)))
+                v.body.transform().eulerAngles = EulerAngles(0f, v.yaw, 0f)
+            }
+            return
+        }
         if (swims) {
             val want = if (t.heading > 0) Looks.yaw(s.id) else Looks.yaw(s.id) + 180f
             v.yaw += (want - v.yaw) * (dt * 2).toFloat().coerceAtMost(1f)
@@ -480,7 +503,12 @@ class SeaView(private val models: Map<String, Entity>, private val tex: Map<Stri
     fun receiveAll() = receive(root)
 
     companion object {
-        const val BASE = 0.24f
+        const val PERFORM_S = 5.0
+        fun ease(t: Double) = t * t * (3 - 2 * t)
+
+        // The plinth under the tank. 0.24 m put the lowest zone near the floor on the headset (2026-11-08 device test):
+        // 18 cm higher, so the bottom of the sea is worked without bending down.
+        const val BASE = 0.42f
         const val DEPTH = 0.3f
         const val CELL = 0.07
     }

@@ -153,6 +153,7 @@ fun DeepStage() {
         show(PANEL_SHOW, ph == Game.Phase.SHOW)
         show(PANEL_HUD, ph == Game.Phase.PLAYING)
         show(PANEL_NOTE, Game.note != null)
+        show(PANEL_MEETING, ph == Game.Phase.PLAYING && Game.meeting != null)
     }
 
     SpatialView(
@@ -174,6 +175,7 @@ fun DeepStage() {
             AttachmentPanel(PANEL_RESULT) { ResultPanel(converter, toggleWindow) }
             AttachmentPanel(PANEL_SHOW) { ShowPanel(converter) }
             AttachmentPanel(PANEL_NOTE) { NotePanel(converter) }
+            AttachmentPanel(PANEL_MEETING) { MeetingPanel(converter) }
             AttachmentPanel(PANEL_MENU) {
                 MenuPanel(converter, toggleWindow, faceMe = { Game.faceRequest++ }, quit = { context.findActivity()?.finishAndRemoveTask() }, version = appVersion)
             }
@@ -188,11 +190,12 @@ fun DeepStage() {
                 panels[PANEL_SHOW]?.enabled = ph == Game.Phase.SHOW
                 panels[PANEL_HUD]?.enabled = ph == Game.Phase.PLAYING
                 panels[PANEL_NOTE]?.enabled = Game.note != null
+                panels[PANEL_MEETING]?.enabled = ph == Game.Phase.PLAYING && Game.meeting != null
             }
         },
         initial = { content, attachments ->
             content.addEntity(Entity().apply {
-                components.set(DirectionalLightComponent(Color(0xFFFFE9D0).toColor4(), 1000f, true))
+                components.set(DirectionalLightComponent(Color(0xFFFFE9D0).toColor4(), 1000f, false))
                 components[TransformComponent::class.java]?.setEulerAngles(EulerAngles(-65f, 15f, 0f))
             })
             val tex = HashMap<String, TextureResource>()
@@ -206,6 +209,7 @@ fun DeepStage() {
                 skies[0] = runCatching { TextureResource.load("textures/sky_lab.jpg", LoadType.FROM_ASSETS, TextureCreateOption()).shared() }.getOrNull()
                 ibl = runCatching { TextureResource.load("textures/ibl_lab.ktx", LoadType.FROM_ASSETS, TextureCreateOption().apply { textureEncoding = TextureEncoding.LINEAR }).shared() }.getOrNull()
             }
+            for (name in PANEL_FRAMES.values) runCatching { Entity.loadSuspend("asset://panels/$name.glb") }.onSuccess { frames[name] = it }
             val models = HashMap<String, Entity>()
             for (name in MODELS) {
                 runCatching { Entity.loadSuspend("asset://models/$name.glb") }
@@ -254,6 +258,10 @@ private fun setSky(e: Entity, m: com.pico.spatial.core.ecs.resource.Material) {
 private val TEXTURES = listOf("sand")
 private val MODELS = listOf("sky", "sub", "angler", "jelly", "squid", "turtle", "manta", "lantern", "wreck", "vent", "tube", "whale", "coral", "chest", "trophy")
 
+/** The thick riveted frames behind the panels (tools/panel3d), loaded by the stage. */
+private val PANEL_FRAMES = mapOf(PANEL_CARD to "panel_card", PANEL_INTRO to "panel_intro", PANEL_RESULT to "panel_result", PANEL_SHOW to "panel_show", PANEL_HUD to "panel_hud", PANEL_MEETING to "panel_meeting")
+private val frames = HashMap<String, Entity>()
+
 private fun attach(seat: Seat, a: SpatialViewAttachments, panels: HashMap<String, Entity>) {
     val world = seat.world ?: return
     fun put(id: String, pos: Vector3, pitch: Float, yaw: Float = 0f) {
@@ -261,7 +269,9 @@ private fun attach(seat: Seat, a: SpatialViewAttachments, panels: HashMap<String
         if (panels[id] === e) return
         panels[id] = e
         world.addChild(e)
-        e.setPos(pos)
+        // The device test found the cards and the tank too close and too low: everything 18 cm farther and higher.
+        e.setPos(Vector3(pos.x, pos.y + LIFT, pos.z - FARTHER))
+        PANEL_FRAMES[id]?.let { name -> frames[name]?.let { f -> f.setPos(Vector3(0f, 0f, -0.006f)); e.addChild(f) } }
         e.transform().eulerAngles = EulerAngles(pitch, yaw, 0f)
     }
     // Cards in front of the glass, the panel with the buttons at the left, turned toward the player.
@@ -271,6 +281,7 @@ private fun attach(seat: Seat, a: SpatialViewAttachments, panels: HashMap<String
     put(PANEL_SHOW, Vector3(-0.72f, 1.2f, -0.72f), -6f, 42f)
     put(PANEL_HUD, Vector3(-0.8f, 1.02f, -0.72f), -10f, 42f)
     put(PANEL_NOTE, Vector3(0f, 0.86f, -0.6f), -10f)
+    put(PANEL_MEETING, Vector3(0.74f, 1.1f, -0.72f), -8f, -42f)
     put(PANEL_MENU, Vector3(-0.74f, 0.62f, -0.56f), -30f, 38f)
 }
 
@@ -312,7 +323,7 @@ private class Seat {
                 it.setPos(Vector3(eye.x, 0f, eye.z))
                 it.transform().eulerAngles = EulerAngles(0f, facing.yaw.toFloat(), 0f)
             }
-            machine?.setPos(Vector3(0f, 0f, -AHEAD))
+            machine?.setPos(Vector3(0f, 0f, -AHEAD - FARTHER))
             machine?.transform()?.eulerAngles = EulerAngles(0f, 0f, 0f)
             machine?.transform()?.setScaleVector(Vector3(1f))
             Log.i(TAG, "facing placed at ${facing.yaw}, eye $eye")
@@ -320,7 +331,7 @@ private class Seat {
     }
 
     companion object {
-        // The tank's middle stands 0.85 m out, its glass about 0.7 m from the eyes.
+        // The tank's middle stands 0.85 m out (plus [FARTHER]), its glass about 0.88 m from the eyes.
         const val AHEAD = 0.85f
     }
 }
@@ -333,3 +344,7 @@ private fun android.content.Context.findActivity(): android.app.Activity? {
     }
     return null
 }
+
+// The 2026-11-08 device test: the cards and the tank 18 cm farther and higher (the tank through its taller plinth).
+private const val FARTHER = 0.18f
+private const val LIFT = 0.18f

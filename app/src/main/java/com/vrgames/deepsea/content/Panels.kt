@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
+import androidx.compose.foundation.layout.height
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
@@ -39,6 +40,7 @@ const val PANEL_INTRO = "intro"
 const val PANEL_HUD = "hud"
 const val PANEL_RESULT = "result"
 const val PANEL_SHOW = "show"
+const val PANEL_MEETING = "meeting"
 const val PANEL_MENU = "menu"
 const val PANEL_NOTE = "note"
 
@@ -91,6 +93,29 @@ fun Pill(c: PhysicalLengthConverter, text: String, color: Color = Dim, onClick: 
     )
 }
 
+/** Text on the lit display of a riveted instrument panel (the frame model is added by the stage). */
+@Composable
+private fun Gauge(c: PhysicalLengthConverter, width: Float, height: Float, content: @Composable () -> Unit) {
+    Column(
+        Modifier.width(c.m(width)).height(c.m(height)).padding(horizontal = c.m(0.016f), vertical = c.m(0.006f)),
+        verticalArrangement = Arrangement.spacedBy(c.m(0.006f), Alignment.CenterVertically),
+    ) { content() }
+}
+
+/** First meeting with a creature: its name, what it is, and the recording. */
+@Composable
+fun MeetingPanel(c: PhysicalLengthConverter) {
+    val sp = Game.meeting ?: return
+    Gauge(c, 0.56f, 0.26f) {
+        Row(horizontalArrangement = Arrangement.spacedBy(c.m(0.012f)), verticalAlignment = Alignment.CenterVertically) {
+            Text(sp.name, fontSize = c.sz(0.03f), color = Lamp)
+            if (Game.speaking == sp.id) CallToAction(c, "■ 停止") { Game.stopNarration() } else CallToAction(c, "▶ 听讲解") { Game.speak(sp.id) }
+            Pill(c, "收起") { Game.stopNarration(); Game.meeting = null }
+        }
+        Text(com.vrgames.deepsea.core.Voices.TEXT[sp.id] ?: sp.fact, fontSize = c.sz(0.0165f), color = Ink)
+    }
+}
+
 private fun stars(n: Int) = "★".repeat(n) + "☆".repeat(3 - n)
 
 private fun bar(v: Double, full: Double): String {
@@ -100,7 +125,7 @@ private fun bar(v: Double, full: Double): String {
 
 @Composable
 fun CardPanel(c: PhysicalLengthConverter) {
-    PanelBox(c, 0.62f) {
+    Gauge(c, 0.64f, 0.34f) {
         Game.version // Read in here: the same arguments, so the box would skip its content.
         Text("深海潜航", fontSize = c.sz(0.046f), color = Lamp)
         Text("把一片海装进玻璃缸。开着小潜水器一层层往下，拍下它们，把样本带回来。", fontSize = c.sz(0.018f), color = Ink)
@@ -116,7 +141,7 @@ fun CardPanel(c: PhysicalLengthConverter) {
 
 @Composable
 fun IntroPanel(c: PhysicalLengthConverter) {
-    PanelBox(c, 0.58f) {
+    Gauge(c, 0.6f, 0.36f) {
         Game.version
         val s = Game.stage
         Text("第 ${Stages.ALL.indexOf(s) + 1} 次下潜 · ${s.title}", fontSize = c.sz(0.032f), color = Lamp)
@@ -140,9 +165,9 @@ private fun Goals(c: PhysicalLengthConverter, p: Dive) {
 
 @Composable
 fun HudPanel(c: PhysicalLengthConverter, toggle: (String) -> Unit) {
-    PanelBox(c, 0.32f) {
+    Gauge(c, 0.34f, 0.34f) {
         Game.version
-        val p = Game.play ?: return@PanelBox
+        val p = Game.play ?: return@Gauge
         Text("第 ${Stages.ALL.indexOf(p.stage) + 1} 次 · ${p.stage.title}", fontSize = c.sz(0.02f), color = Lamp)
         val z = Sea.zoneAt(p.sub.at.y)
         Text("${Sea.meters(p.sub.at.y)} 米　${z.title}", fontSize = c.sz(0.024f), color = Sky)
@@ -162,9 +187,9 @@ fun HudPanel(c: PhysicalLengthConverter, toggle: (String) -> Unit) {
 
 @Composable
 fun ResultPanel(c: PhysicalLengthConverter, toggle: (String) -> Unit) {
-    PanelBox(c, 0.58f) {
+    Gauge(c, 0.6f, 0.4f) {
         Game.version
-        val p = Game.play ?: return@PanelBox
+        val p = Game.play ?: return@Gauge
         if (p.won) {
             Text("${p.stage.title}　${stars(p.stars())}", fontSize = c.sz(0.034f), color = Lamp)
             Text("电量还剩 ${(p.battery / p.stage.battery * 100).toInt()}%。", fontSize = c.sz(0.018f), color = Ink)
@@ -195,7 +220,7 @@ fun ResultPanel(c: PhysicalLengthConverter, toggle: (String) -> Unit) {
 
 @Composable
 fun ShowPanel(c: PhysicalLengthConverter) {
-    PanelBox(c, 0.3f) {
+    Gauge(c, 0.32f, 0.17f) {
         Text("万灯之海", fontSize = c.sz(0.03f), color = Lamp)
         Text("十二次下潜全部三星。整片海都为你亮了。", fontSize = c.sz(0.017f), color = Ink)
         Pill(c, "结束") { Game.endShow() }

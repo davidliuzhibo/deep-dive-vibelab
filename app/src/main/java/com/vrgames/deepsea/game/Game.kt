@@ -66,6 +66,7 @@ object Game {
     val trophies get() = if (gold) 3 else if (silver) 2 else if (bronze) 1 else 0
 
     fun init(context: Context) {
+        appContext = context.applicationContext
         if (prefs != null) return
         prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).also { p ->
             musicOn = p.getBoolean("music", true)
@@ -186,11 +187,49 @@ object Game {
         sound?.play(Sfx.PHOTO, here(p, e.key))
         view?.flashAt(t.at)
         if (seen.add(t.sp.id)) save()
-        // Every first meeting tells something: short, with a number to remember.
-        say(if (e.first) "${t.sp.name}：${t.sp.fact}" else "又拍到一张${t.sp.name}。")
+        // Every first meeting is an event: the creature performs, and its card and voice come up.
+        if (e.first) {
+            view?.perform(e.key)
+            meeting = t.sp
+            speak(t.sp.id)
+        } else say("又拍到一张${t.sp.name}。")
+    }
+
+    /** The creature just met for the first time, whose card is up. */
+    var meeting by mutableStateOf<com.vrgames.deepsea.core.Species?>(null)
+    /** The narration clip now playing, or null. */
+    var speaking by mutableStateOf<String?>(null); private set
+    private var narrator: android.media.MediaPlayer? = null
+    private var appContext: Context? = null
+
+    fun speak(id: String) {
+        stopNarration()
+        val c = appContext ?: return
+        runCatching {
+            val fd = c.assets.openFd("narration/$id.ogg")
+            narrator = android.media.MediaPlayer().apply {
+                setDataSource(fd.fileDescriptor, fd.startOffset, fd.length)
+                fd.close()
+                setOnCompletionListener { stopNarration() }
+                prepare()
+                start()
+            }
+            speaking = id
+            music?.ducked = true
+        }.onFailure { Log.i(TAG, "narration $id: ${it.message}") }
+    }
+
+    fun stopNarration() {
+        runCatching { narrator?.stop() }
+        runCatching { narrator?.release() }
+        narrator = null
+        speaking = null
+        music?.ducked = false
     }
 
     private fun finish(won: Boolean) {
+        stopNarration()
+        meeting = null
         val p = play ?: return
         trophiesBefore = trophies
         if (won) {

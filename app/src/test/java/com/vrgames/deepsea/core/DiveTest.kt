@@ -152,3 +152,13 @@ class DiveTest {
         }
     }
 }
+
+class VoicesTest {
+    @org.junit.Test fun everyThingInTheSeaHasNarrationOfTheRightLength() {
+        for (s in Sea.SPECIES) {
+            val t = Voices.TEXT[s.id]
+            org.junit.Assert.assertNotNull(s.id, t)
+            org.junit.Assert.assertTrue("${s.id} ${t!!.length}", t.length in 55..110)
+        }
+    }
+}
