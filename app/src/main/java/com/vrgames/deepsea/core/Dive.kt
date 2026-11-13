@@ -159,6 +159,15 @@ class Dive(val stage: Stage, private val seen: (String) -> Boolean = { false }) 
     var won = false; private set
     /** What the sub is on its way to do when it arrives. */
     var job: Pair<Thing, Boolean>? = null; private set
+    /**
+     * The animal just photographed, which the sub now keeps up with at photo range (device test 2026-11-12: from inside
+     * the sub there is no overview to find an animal, so it is found and photographed in the overview, then followed, and
+     * the cabin view is for watching it). Cleared by any new order.
+     */
+    var follow: Thing? = null; private set
+
+    /** Test hook: follow [key] at once, as if just photographed. */
+    fun debugFollow(key: String) { thing(key)?.let { follow = it; job = null; it.photographed = true } }
     private val events = ArrayList<Ev>()
     private var zone = Sea.zoneAt(START.y)
     private var warned = false
@@ -182,6 +191,7 @@ class Dive(val stage: Stage, private val seen: (String) -> Boolean = { false }) 
     fun steer(p: P) {
         if (over) return
         job = null
+        follow = null
         val c = clamp(p)
         if (p.y < stage.floor - 0.03) events += Ev.Note("船体只能下到这里：水压太大，下一章换耐压舱。")
         sub.target = c
@@ -197,6 +207,7 @@ class Dive(val stage: Stage, private val seen: (String) -> Boolean = { false }) 
         }
         // A sample for what a goal wants sampled, a photograph for all else.
         val wantsSample = goals.any { it.kind == GoalKind.SAMPLE && !it.met && t.key.startsWith(it.target) }
+        follow = null
         job = t to wantsSample
         if (!near(t)) sub.target = standoff(t)
     }
@@ -320,6 +331,12 @@ class Dive(val stage: Stage, private val seen: (String) -> Boolean = { false }) 
     }
 
     private fun doJob() {
+        val f = follow
+        if (job == null && f != null) {
+            // Keep up with the followed animal, at photo range, without crowding it.
+            if (!near(f)) sub.target = standoff(f)
+            return
+        }
         val (t, sample) = job ?: return
         // The target moves: keep after it, at photo range.
         if (!near(t)) {
@@ -348,6 +365,7 @@ class Dive(val stage: Stage, private val seen: (String) -> Boolean = { false }) 
         val first = !seen(t.sp.id) && !t.photographed
         t.photographed = true
         t.flash = 0.35
+        if (t.sp.kind == Kind.ANIMAL) follow = t
         events += Ev.Photo(t.key, first)
         for (g in goals) if (g.kind == GoalKind.PHOTO && !g.met && t.key.startsWith(g.target) && !g.counted(t)) {
             g.mark(t)

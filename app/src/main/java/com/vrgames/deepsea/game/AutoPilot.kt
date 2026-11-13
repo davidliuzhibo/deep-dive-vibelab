@@ -48,10 +48,13 @@ object AutoPilot {
             "steer" -> id?.split(",")?.mapNotNull { it.trim().toDoubleOrNull() }?.takeIf { it.size == 2 }?.let { Game.tap(Target.Water(P(it[0], it[1]))) }
             "thing" -> id?.let { Game.tap(Target.OnThing(it)) }
             "lamp" -> Game.lamp()
+            "cockpit" -> if (Game.cockpit != (id != "off")) Game.toggleCockpit()
+            "follow" -> id?.let { k -> synchronized(Game.lock) { Game.play?.debugFollow(k) } }
             "walk" -> { main.removeCallbacksAndMessages(null); at = 0; main.postDelayed(::walkStep, 300) }
             "grant" -> Game.grant(id?.toIntOrNull() ?: 3)
             "show" -> Game.show()
             "speed" -> Game.timeScale = id?.toDoubleOrNull() ?: 1.0
+            "cabin" -> Game.debugCabin = id
             "view" -> Game.debugView = id?.takeIf { it != "reset" }
             "open" -> Game.debugOpen = id
             "reset" -> { main.removeCallbacksAndMessages(null); Game.restart() }

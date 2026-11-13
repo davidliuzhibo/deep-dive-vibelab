@@ -121,11 +121,48 @@ class SeaView(private val models: Map<String, Entity>, private val tex: Map<Stri
     /** A first meeting: the creature rises, turns right round and shows itself, shedding light. */
     fun perform(key: String) { views[key]?.show = 0.0 }
 
+    /** The lab's tank: glass, frame, painted walls, plinth, shelf. Hidden in the cockpit, where the sea is all round. */
+    private val tankParts = ArrayList<Entity>()
+    private var floorView: Entity? = null
+    private var cockpit = false
+
     init {
         root.addChild(sea)
         sea.setPos(Vector3(0f, BASE, 0f))
+        val before = (sea.getChildren() + root.getChildren()).toSet()
         tank()
+        tankParts += (sea.getChildren() + root.getChildren()).filter { it !in before && it !== floorView }
         cells()
+    }
+
+    /** The cockpit view on or off: the tank and the sub itself go (the player is in it), the sea stays. */
+    /** In the cabin view: the sea's scale and how far ahead its plane stands (set by the stage). */
+    var cabinScale = 12f
+    var cabinView = 4f
+    private var subAtForCabin = P(0.0, 0.0)
+    /** The point of the sea the cabin looks at, straight ahead (set by the stage; the sub's own place if null). */
+    @Volatile var cabinCentre: P? = null
+
+    /**
+     * Whether a thing, grown to the cabin view's scale, would reach into the cabin (radius [Cockpit.RH]) or past the
+     * windows: those are not shown in the cabin view (device test 2026-11-12: a turtle swam through the cabin).
+     */
+    private fun intoCabin(t: Thing): Boolean {
+        val c = cabinCentre ?: subAtForCabin
+        val dx = (t.at.x - c.x) * cabinScale
+        val dy = (t.at.y - c.y) * cabinScale
+        val dist = kotlin.math.sqrt(dx * dx + dy * dy + (cabinView * cabinView).toDouble())
+        return dist - t.sp.size * cabinScale * 0.6 < Cockpit.RH + 0.3
+    }
+
+    fun cockpitMode(on: Boolean) {
+        cockpit = on
+        tankParts.forEach { it.enabled = !on }
+        subView?.enabled = !on
+        // The water's pinch boxes and hover glows: the cabin is for watching (its own screen has the buttons).
+        waterOf.keys.forEach { it.enabled = !on }
+        // The red line of the deepest the sub may go: across the whole window in the cabin, like a laser.
+        limit?.enabled = !on
     }
 
     /** A round glow fading to nothing at its edge, added to what is behind it. */
@@ -205,10 +242,11 @@ class SeaView(private val models: Map<String, Entity>, private val tex: Map<Stri
                 setRoughness(1f)
             }.shared()
         } ?: pbr(color(0.15f, 0.15f, 0.17f), roughness = 1f).shared()
-        sea.addChild(model(plane(w, d, "floor"), sand).apply {
+        floorView = model(plane(w, d, "floor"), sand).apply {
             setPos(Vector3(0f, 0.002f, 0f))
             transform().eulerAngles = EulerAngles(-90f, 0f, 0f)
-        })
+        }
+        sea.addChild(floorView!!)
         val top = glow(color(0.5f, 0.85f, 1f, 0.22f)).shared()
         sea.addChild(model(plane(w, d, "surface"), top).apply {
             setPos(Vector3(0f, h, 0f))
@@ -303,6 +341,7 @@ class SeaView(private val models: Map<String, Entity>, private val tex: Map<Stri
             s.setScale(Looks.height("sub"))
             life.addChild(s)
             subView = s
+            s.enabled = !cockpit
         } ?: run { subView = null }
         cone = model(MeshResource.createCone(1f, 1f), lampCone).also { life.addChild(it) }
         // A flat glow in the plane of the sub. A ball this big would stand out through the glass and cut the panels.
@@ -319,6 +358,7 @@ class SeaView(private val models: Map<String, Entity>, private val tex: Map<Stri
         }.also { life.addChild(it) }
         limit = if (p.stage.floor > 0.1) model(MeshResource.createBox(Vector3(w, 0.004f, 0.004f), 0.001f), limitMat).apply {
             setPos(Vector3(0f, (p.stage.floor - 0.03).toFloat(), 0f))
+            enabled = !cockpit
         }.also { life.addChild(it) } else null
     }
 
@@ -354,6 +394,7 @@ class SeaView(private val models: Map<String, Entity>, private val tex: Map<Stri
     fun sync(p: Dive, dt: Double) {
         if (p !== played) return
         clock += dt
+        subAtForCabin = p.sub.at
         for (t in p.things) syncThing(t, dt)
         val s = p.sub
         val y = (s.at.y + 0.012 * sin(clock * 1.5)).toFloat()
@@ -364,14 +405,17 @@ class SeaView(private val models: Map<String, Entity>, private val tex: Map<Stri
             it.transform().eulerAngles = EulerAngles(0f, subYaw, 0f)
         }
         cone?.let { c ->
-            if (c.enabled != s.lamp) c.enabled = s.lamp
+            // In the cabin the beam would hang in the sea beside the animal ahead: the console switch shows the lamp.
+            val on = s.lamp && !cockpit
+            if (c.enabled != on) c.enabled = on
             val len = (Dive.LAMP * 0.95).toFloat()
             c.setPos(Vector3((s.at.x + s.heading * (len / 2 + 0.03)).toFloat(), y, 0f))
             c.transform().eulerAngles = EulerAngles(0f, 0f, if (s.heading > 0) 90f else -90f)
             c.transform().setScaleVector(Vector3(len * 0.45f, len, len * 0.45f))
         }
         halo?.let { h ->
-            if (h.enabled != s.lamp) h.enabled = s.lamp
+            val on = s.lamp && !cockpit
+            if (h.enabled != on) h.enabled = on
             h.setPos(Vector3(s.at.x.toFloat(), y, -0.01f))
         }
         marks(p)
@@ -393,6 +437,14 @@ class SeaView(private val models: Map<String, Entity>, private val tex: Map<Stri
 
     /** Rings on what the goals want, a ring where the sub is headed, the band at the surface when it's time to go home. */
     private fun marks(p: Dive) {
+        // The tank's markers are drawn for the tank: grown twelve times in the cabin they hang in the sea as big discs.
+        if (cockpit) {
+            wantRings.values.forEach { if (it.enabled) it.enabled = false }
+            goal?.let { if (it.enabled) it.enabled = false }
+            surfaceBand?.let { if (it.enabled) it.enabled = false }
+            surfaceTag?.let { if (it.enabled) it.enabled = false }
+            return
+        }
         val pulse = 1f + 0.1f * sin(clock * 3).toFloat()
         for (t in p.things) wantRings[t.key]?.let { r ->
             val on = p.wanted(t)
@@ -423,6 +475,11 @@ class SeaView(private val models: Map<String, Entity>, private val tex: Map<Stri
 
     private fun syncThing(t: Thing, dt: Double) {
         val v = views[t.key] ?: return
+        val shown = !(cockpit && intoCabin(t))
+        if (v.e.enabled != shown) v.e.enabled = shown
+        // The glow balls round the glowing animals: grown twelve times in the cabin they cover the animal like a lamp shade.
+        v.halo?.let { h -> val on = shown && !cockpit; if (h.enabled != on) h.enabled = on }
+        if (!shown) return
         val s = t.sp
         val swims = s.swim > 0
         val base = if (swims) Looks.height(s.id) * Looks.mid(s.id) else 0f
@@ -473,6 +530,7 @@ class SeaView(private val models: Map<String, Entity>, private val tex: Map<Stri
 
     /** The camera's flash, or the sampler's burst. */
     fun flashAt(at: P) {
+        if (cockpit) return
         flash.setPos(Vector3(at.x.toFloat(), at.y.toFloat(), 0f))
         flash.enabled = true
         flashLeft = 0.18

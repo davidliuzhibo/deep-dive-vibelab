@@ -39,6 +39,31 @@ object Game {
     var phase by mutableStateOf(Phase.CARD)
     var version by mutableIntStateOf(0); private set
     var note by mutableStateOf<String?>(null)
+    /** The second view: inside the sub (the tank in the lab is the first, and the default). */
+    var cockpit by mutableStateOf(false)
+    private var cockpitTold = false
+    private var zoneTold = false
+
+    /**
+     * The cabin view is for watching the animal the sub is following (device test 2026-11-12: from inside there is no
+     * overview to find anything): it opens once an animal has been photographed in the overview and is being followed.
+     */
+    val canCabin get() = cockpit || play?.follow != null
+    private var cabinHintDue = false
+
+    fun toggleCockpit() {
+        val f = play?.follow
+        if (!cockpit && f == null) {
+            say("先在全局视角里捏一只动物、拍到它，潜水器就会跟着它游；那时再「进入舱内看」。")
+            version++
+            return
+        }
+        cockpit = !cockpit
+        Log.i(TAG, "cabin ${if (cockpit) "in" else "out"} following ${f?.key}")
+        sound?.play(Sfx.ZONE)
+        say(if (cockpit) "进入舱内。潜水器跟着${f?.sp?.name ?: "它"}游，窗外的海随深度变暗；看够了，点面前操纵台上的「回到全局」。" else "回到全局视角，看整只水缸。")
+        version++
+    }
     var noteVersion by mutableIntStateOf(0); private set
     var window by mutableStateOf<String?>(null); private set
     private var windowCopy: Any? = null
@@ -54,6 +79,8 @@ object Game {
     var bot: Solver? = null
     var timeScale = 1.0
     var debugView by mutableStateOf<String?>(null)
+    /** Test hook: what [com.vrgames.deepsea.render.Cockpit.debug] gets. */
+    @Volatile var debugCabin: String? = null
     var debugOpen by mutableStateOf<String?>(null)
     private var lastSecond = -1
     private var showing = false
@@ -113,6 +140,7 @@ object Game {
         showing = false
         fresh(stage)
         phase = Phase.PLAYING
+        cockpit = false
         music?.resume()
         Log.i(TAG, "begin ${stage.id}")
         version++
@@ -157,6 +185,9 @@ object Game {
         val p = play ?: return
         if (phase == Phase.SHOW) view?.show(dt)
         if (phase != Phase.PLAYING) return
+        if (cabinHintDue && speaking == null) { cabinHintDue = false; speak("cockpit_hint"); version++ }
+        // Following nothing any more (a new order): the cabin view has nothing to watch, back to the overview.
+        if (cockpit && p.follow == null && p.job == null) { cockpit = false; say("没有在跟随的动物了，回到全局视角。"); version++ }
         val b = bot
         val evs = synchronized(lock) { if (b != null) p.step(dt) { b.update(com.vrgames.deepsea.core.Dive.STEP) } else p.step(dt) }
         var changed = false
@@ -168,7 +199,13 @@ object Game {
                 is Ev.Sample -> { sound?.play(Sfx.SAMPLE, here(p, e.key)); p.thing(e.key)?.let { view?.flashAt(it.at); say("采到了：${it.sp.name}。") } }
                 is Ev.Lit -> sound?.play(Sfx.LIT, here(p, e.key))
                 is Ev.Bump -> {}
-                is Ev.ZoneIn -> { sound?.play(Sfx.ZONE); say("${e.zone.title}（${e.zone.meters}）。${e.zone.color}") }
+                is Ev.ZoneIn -> {
+                    sound?.play(Sfx.ZONE)
+                    // Going deeper: once, a word that the cockpit shows it best.
+                    val more = if (!cockpit && !zoneTold && e.zone.ordinal >= 1 && canCabin) { zoneTold = true; "想看窗外的海一点点变暗，点「进入舱内看」。" } else ""
+                    say("${e.zone.title}（${e.zone.meters}）。${e.zone.color}$more")
+                    if (cockpit && e.zone.ordinal == 2 && !zoneTold) { zoneTold = true; speak("cockpit_zone") }
+                }
                 Ev.Goal -> sound?.play(Sfx.GOAL)
                 Ev.Low -> sound?.play(Sfx.LOW)
                 Ev.Won -> finish(true)
@@ -184,6 +221,7 @@ object Game {
 
     private fun onPhoto(p: Dive, e: Ev.Photo) {
         val t = p.thing(e.key) ?: return
+        Log.i(TAG, "photo ${e.key} first=${e.first} follow=${p.follow?.key}")
         sound?.play(Sfx.PHOTO, here(p, e.key))
         view?.flashAt(t.at)
         if (seen.add(t.sp.id)) save()
@@ -193,6 +231,9 @@ object Game {
             meeting = t.sp
             speak(t.sp.id)
         } else say("又拍到一张${t.sp.name}。")
+        // The first animal photographed: once its own words are said, the voice tells that the sub now follows it and
+        // the cabin view is open.
+        if (t.sp.kind == com.vrgames.deepsea.core.Kind.ANIMAL && !cockpitTold) { cockpitTold = true; cabinHintDue = true }
     }
 
     /** The creature just met for the first time, whose card is up. */

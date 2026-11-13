@@ -20,6 +20,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.sp
@@ -43,6 +44,8 @@ const val PANEL_SHOW = "show"
 const val PANEL_MEETING = "meeting"
 const val PANEL_MENU = "menu"
 const val PANEL_NOTE = "note"
+const val PANEL_PHOTOS = "photos"
+const val PANEL_CABIN = "cabin"
 
 val Ink = Color(0xFFEAF6FF)
 val Lamp = Color(0xFFFFD86B)
@@ -130,7 +133,7 @@ fun CardPanel(c: PhysicalLengthConverter) {
         Text("深海潜航", fontSize = c.sz(0.046f), color = Lamp)
         Text("把一片海装进玻璃缸。开着小潜水器一层层往下，拍下它们，把样本带回来。", fontSize = c.sz(0.018f), color = Ink)
         Text("怎么玩", fontSize = c.sz(0.02f), color = Mint)
-        Text("· 看向水里捏一下：潜水器开过去。\n· 捏一条鱼：它自己靠近、拍照。\n· 越深越黑：只有灯照到才看得见。电量用完就结束。", fontSize = c.sz(0.0165f), color = Ink)
+        Text("· 看向水里捏一下：潜水器开过去。\n· 捏一条鱼：它自己靠近、拍照。\n· 越深越黑：只有灯照到才看得见。电量用完就结束。\n· 两种看法：默认看整只水缸（全局）。拍到一只动物后，潜水器会跟着它游，这时点「进入舱内看」，就坐进潜水器里从舷窗看它。", fontSize = c.sz(0.0165f), color = Ink)
         if (Game.stars > 0) Text("已得 ${Game.stars} / ${Game.maxStars} 颗星，图鉴 ${Game.seen.size} / ${Sea.SPECIES.size}", fontSize = c.sz(0.016f), color = Mint)
         Row(horizontalArrangement = Arrangement.spacedBy(c.m(0.01f)), verticalAlignment = Alignment.CenterVertically) {
             CallToAction(c, if (Game.stars > 0) "接着下潜 →" else "下水 →") { Game.start() }
@@ -151,6 +154,7 @@ fun IntroPanel(c: PhysicalLengthConverter) {
         Text("三星：回来时电量还剩 ${(s.par / s.battery * 100).toInt()}% 以上。", fontSize = c.sz(0.015f), color = Dim)
         Row(horizontalArrangement = Arrangement.spacedBy(c.m(0.01f)), verticalAlignment = Alignment.CenterVertically) {
             CallToAction(c, "开始 →") { Game.begin() }
+            if (Game.canCabin) Pill(c, if (Game.cockpit) "在舱内 ✓" else "进入舱内看", Sky) { Game.toggleCockpit() }
             Pill(c, "返回") { Game.toCard() }
         }
     }
@@ -178,6 +182,8 @@ fun HudPanel(c: PhysicalLengthConverter, toggle: (String) -> Unit) {
             Pill(c, if (p.sub.lamp) "探照灯：开" else "探照灯：关", if (p.sub.lamp) Lamp else Dim) { Game.lamp() }
             Pill(c, "重来") { Game.retry() }
         }
+        // The second view, offered where the hands already are.
+        if (Game.canCabin) Pill(c, if (Game.cockpit) "回到全局" else "进入舱内看（跟着${Game.play?.follow?.sp?.name ?: "它"}）", Sky) { Game.toggleCockpit() }
         Row(horizontalArrangement = Arrangement.spacedBy(c.m(0.006f))) {
             Pill(c, "图鉴", Lamp) { toggle(ALBUM_ID) }
             Pill(c, "关卡") { toggle(LEVELS_ID) }
@@ -247,6 +253,7 @@ fun MenuPanel(c: PhysicalLengthConverter, toggle: (String) -> Unit, faceMe: () -
         Pill(c, if (Game.window == ALBUM_ID) "收起图鉴" else "深海图鉴") { toggle(ALBUM_ID) }
         Pill(c, if (Game.window == GUIDE_ID) "收起说明" else "潜航说明") { toggle(GUIDE_ID) }
         if (Game.gold) Pill(c, "万灯之海", Lamp) { Game.menuOpen = false; Game.show() }
+        Pill(c, if (Game.cockpit) "回到全局" else "进入舱内看", Sky) { Game.menuOpen = false; Game.toggleCockpit() }
         Pill(c, "把水缸摆到我正前方") { faceMe() }
         Pill(c, if (Game.musicOn) "音乐：开" else "音乐：关") { Game.toggleMusic() }
         RestartPill(c)
@@ -277,5 +284,51 @@ fun WindowHeader(id: String, title: String, size: TextUnit) {
         Text(title, fontSize = size, color = Lamp)
         Spacer(Modifier.weight(1f))
         Button(onClick = { Game.closeWindow(id) }) { Text("关闭", fontSize = 22.sp) }
+    }
+}
+
+
+/** The photo screen (2026-11-09 review): every creature and find photographed so far, its picture and its depth. */
+@OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
+@Composable
+fun PhotosPanel(c: PhysicalLengthConverter) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    Gauge(c, 0.4f, 0.3f) {
+        Game.version
+        Text("照片屏　${Game.seen.size} / ${Sea.SPECIES.size}", fontSize = c.sz(0.02f), color = Lamp)
+        if (Game.seen.isEmpty()) Text("捏一条鱼或一样东西，拍下的照片会出现在这里。", fontSize = c.sz(0.015f), color = Dim)
+        androidx.compose.foundation.layout.FlowRow(horizontalArrangement = Arrangement.spacedBy(c.m(0.006f)), verticalArrangement = Arrangement.spacedBy(c.m(0.005f)), maxItemsInEachRow = 6) {
+            for (id in Game.seen.toList().takeLast(12)) {
+                val sp = runCatching { Sea.species(id) }.getOrNull() ?: continue
+                Column(Modifier.width(c.m(0.058f)), horizontalAlignment = Alignment.CenterHorizontally) {
+                    val pic = remember(id) {
+                        runCatching { context.assets.open("thumbs/$id.png").use { android.graphics.BitmapFactory.decodeStream(it)?.asImageBitmap() } }.getOrNull()
+                    }
+                    androidx.compose.foundation.layout.Box(Modifier.width(c.m(0.054f)).height(c.m(0.054f)).clip(RoundedCornerShape(c.m(0.006f))).background(Color(0x3363B7E6))) {
+                        pic?.let { androidx.compose.foundation.Image(it, null, Modifier.fillMaxWidth()) }
+                    }
+                    Text(sp.name, fontSize = c.sz(0.0105f), color = Ink, maxLines = 1)
+                }
+            }
+        }
+    }
+}
+
+/**
+ * The cabin's screen on the console (device test 2026-11-12: in the old cockpit the text was covered and it was not clear
+ * what to do). Watching only: what the sub follows, the depth, the lamp, the latest word, and the way back.
+ */
+@Composable
+fun CabinPanel(c: PhysicalLengthConverter) {
+    Game.version
+    val p = Game.play ?: return
+    val f = p.follow
+    PanelBox(c, 0.44f) {
+        Text(if (f != null) "正在跟着：${f.sp.name}" else "潜水器", fontSize = c.sz(0.024f), color = Lamp)
+        Text("深度 ${com.vrgames.deepsea.core.Sea.meters(p.sub.at.y)} 米 · ${com.vrgames.deepsea.core.Sea.zoneAt(p.sub.at.y).title}　电量 ${(p.battery / p.stage.battery * 100).toInt()}%", fontSize = c.sz(0.016f), color = Ink)
+        Text("从前面的大舷窗看它游动。这里只观看；要拍别的、去别处，先回到全局。", fontSize = c.sz(0.014f), color = Dim)
+        Game.note?.let { Text(it, fontSize = c.sz(0.015f), color = Lamp) }
+        Pill(c, if (p.sub.lamp) "探照灯：开（点一下关）" else "探照灯：关（点一下开）", Sky) { Game.lamp() }
+        Pill(c, "回到全局", Mint) { Game.toggleCockpit() }
     }
 }

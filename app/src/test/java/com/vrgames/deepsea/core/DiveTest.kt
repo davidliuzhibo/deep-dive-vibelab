@@ -161,4 +161,21 @@ class VoicesTest {
             org.junit.Assert.assertTrue("${s.id} ${t!!.length}", t.length in 55..110)
         }
     }
+
+    /** After its photo the sub keeps up with the animal (for the cabin view), and a new order ends that. */
+    @Test
+    fun aPhotographedAnimalIsFollowedUntilTheNextOrder() {
+        val d = Dive(Stages.byId("a1"))
+        val t = d.thing("manta0")!!
+        d.act(t.key)
+        var n = 0
+        while (!t.photographed && n++ < 3000) d.step(1.0 / 30)
+        assertTrue(t.photographed)
+        assertEquals(t, d.follow)
+        // Let it swim a while: the sub stays at photo range.
+        repeat(600) { d.step(1.0 / 30) }
+        assertTrue("${(t.at - d.sub.at).len()}", (t.at - d.sub.at).len() <= Dive.RANGE * 2 + t.sp.size)
+        d.steer(P(0.0, Sea.H / 2))
+        assertEquals(null, d.follow)
+    }
 }

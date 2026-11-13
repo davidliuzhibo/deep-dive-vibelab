@@ -46,6 +46,7 @@ import com.vrgames.deepsea.game.AutoPilot
 import com.vrgames.deepsea.game.Game
 import com.vrgames.deepsea.render.Music
 import com.vrgames.deepsea.render.Sound
+import com.vrgames.deepsea.render.Cockpit
 import com.vrgames.deepsea.render.SeaView
 import com.vrgames.deepsea.render.color
 import com.vrgames.deepsea.render.model
@@ -74,6 +75,7 @@ fun DeepStage() {
     val subscription = remember { arrayOfNulls<Cancellable>(1) }
     var view by remember { mutableStateOf<SeaView?>(null) }
     val seat = remember { Seat() }
+    val cockpitRef = remember { arrayOfNulls<Cockpit>(1) }
     val panels = remember { HashMap<String, Entity>() }
     val skies = remember { arrayOfNulls<TextureResource>(1) }
     val appVersion = remember { runCatching { context.packageManager.getPackageInfo(context.packageName, 0).versionName }.getOrNull() ?: "" }
@@ -112,6 +114,9 @@ fun DeepStage() {
         }
         val observer = androidx.lifecycle.LifecycleEventObserver { _, e ->
             if (e == androidx.lifecycle.Lifecycle.Event.ON_RESUME) music.resume() else if (e == androidx.lifecycle.Lifecycle.Event.ON_PAUSE) music.pause()
+            // Home pressed mid-narration: the voice stops with the game (device test 2026-11-12). ON_STOP, as a window of
+            // the game's own opening also pauses the stage.
+            if (e == androidx.lifecycle.Lifecycle.Event.ON_STOP) Game.stopNarration()
         }
         lifecycle.addObserver(observer)
         onDispose {
@@ -145,15 +150,23 @@ fun DeepStage() {
     }
 
     SideEffect {
-        fun show(id: String, on: Boolean) = panels[id]?.let { if (it.enabled != on) it.enabled = on }
+        fun show(id: String, on: Boolean) {
+            panels[id]?.let { if (it.enabled != on) it.enabled = on }
+            // The riveted frame too, by itself: on the emulator a hidden HUD's frame came back in the cabin (2026-11-12).
+            PANEL_FRAMES[id]?.let { frames[it] }?.let { if (it.enabled != on) it.enabled = on }
+        }
         val ph = Game.phase
         show(PANEL_CARD, ph == Game.Phase.CARD)
         show(PANEL_INTRO, ph == Game.Phase.INTRO)
         show(PANEL_RESULT, ph == Game.Phase.RESULT)
         show(PANEL_SHOW, ph == Game.Phase.SHOW)
-        show(PANEL_HUD, ph == Game.Phase.PLAYING)
-        show(PANEL_NOTE, Game.note != null)
-        show(PANEL_MEETING, ph == Game.Phase.PLAYING && Game.meeting != null)
+        // In the cabin only the console's screen shows (device test 2026-11-12: panels in the cabin were covered by the sea).
+        val cabin = Game.cockpit && ph == Game.Phase.PLAYING
+        show(PANEL_HUD, ph == Game.Phase.PLAYING && !cabin)
+        show(PANEL_NOTE, Game.note != null && !cabin)
+        show(PANEL_MEETING, ph == Game.Phase.PLAYING && Game.meeting != null && !cabin)
+        show(PANEL_PHOTOS, ph == Game.Phase.PLAYING && !cabin)
+        show(PANEL_CABIN, cabin)
     }
 
     SpatialView(
@@ -162,6 +175,12 @@ fun DeepStage() {
                 val v = view
                 if (v != null) for (i in infos) {
                     if (!i.isDownEvent()) continue
+                    // The lamp switch on the cockpit's console.
+                    val ck = cockpitRef[0]
+                    if (ck != null && Game.cockpit && isUnder(i.targetedEntity, ck.lampButton)) {
+                        main.post { Game.lamp() }
+                        continue
+                    }
                     val t = v.target(i.targetedEntity) ?: continue
                     main.post { Game.tap(t) }
                 }
@@ -176,6 +195,8 @@ fun DeepStage() {
             AttachmentPanel(PANEL_SHOW) { ShowPanel(converter) }
             AttachmentPanel(PANEL_NOTE) { NotePanel(converter) }
             AttachmentPanel(PANEL_MEETING) { MeetingPanel(converter) }
+            AttachmentPanel(PANEL_PHOTOS) { PhotosPanel(converter) }
+            AttachmentPanel(PANEL_CABIN) { CabinPanel(converter) }
             AttachmentPanel(PANEL_MENU) {
                 MenuPanel(converter, toggleWindow, faceMe = { Game.faceRequest++ }, quit = { context.findActivity()?.finishAndRemoveTask() }, version = appVersion)
             }
@@ -191,6 +212,7 @@ fun DeepStage() {
                 panels[PANEL_HUD]?.enabled = ph == Game.Phase.PLAYING
                 panels[PANEL_NOTE]?.enabled = Game.note != null
                 panels[PANEL_MEETING]?.enabled = ph == Game.Phase.PLAYING && Game.meeting != null
+                panels[PANEL_PHOTOS]?.enabled = ph == Game.Phase.PLAYING
             }
         },
         initial = { content, attachments ->
@@ -228,7 +250,12 @@ fun DeepStage() {
             val v = SeaView(models, tex)
             seat.world = world
             seat.machine = v.root
+            seat.sky = s
             world.addChild(v.root)
+            val ck = Cockpit().also { it.root.enabled = false }
+            world.addChild(ck.root)
+            seat.cockpit = ck
+            cockpitRef[0] = ck
             attach(seat, attachments, panels)
             ibl?.let { v.useIbl(it) }
             Game.view = v
@@ -244,6 +271,10 @@ fun DeepStage() {
                 synchronized(Game.lock) {
                     val p = Game.play
                     if (p != null) v.sync(p, dt)
+                    // The cockpit: the sea, grown large, is moved so the sub is where the player sits.
+                    seat.cockpitFrame(Game.cockpit, p, v, pose?.position?.y, dt)
+                    // The console screen follows the cabin's height (the eyes), on the console top.
+                    if (Game.cockpit) panels[PANEL_CABIN]?.setPos(Vector3(0f, seat.eye - 0.46f, -0.52f))
                 }
             }
         },
@@ -283,6 +314,10 @@ private fun attach(seat: Seat, a: SpatialViewAttachments, panels: HashMap<String
     put(PANEL_NOTE, Vector3(0f, 0.86f, -0.6f), -10f)
     put(PANEL_MEETING, Vector3(0.74f, 1.1f, -0.72f), -8f, -42f)
     put(PANEL_MENU, Vector3(-0.74f, 0.62f, -0.56f), -30f, 38f)
+    // The cabin's screen, on the console under the front window, tipped up toward the player.
+    put(PANEL_CABIN, Vector3(0f, 0.74f, -0.52f), -55f)
+    // The photo screen low at the right of the tank.
+    put(PANEL_PHOTOS, Vector3(0.7f, 0.66f, -0.6f), -24f, -40f)
 }
 
 /**
@@ -292,11 +327,69 @@ private fun attach(seat: Seat, a: SpatialViewAttachments, panels: HashMap<String
 private class Seat {
     var world: Entity? = null
     var machine: Entity? = null
+    var sky: Entity? = null
+    var cockpit: Cockpit? = null
+    private var inCockpit = false
+    private var logClock = 0.0
+    private var viewAt: com.vrgames.deepsea.core.P? = null
+    private var eyeY = 1.2f
+    val eye get() = eyeY
     private val facing = com.vrgames.deepsea.core.Facing()
     private var waited = 0.0
     private var shown = false
 
     fun again() = facing.again()
+
+    /**
+     * The view of the frame: in the lab, the tank stands where it always does; in the cockpit, the
+     * sea is [COCKPIT_SCALE] times larger and moved each frame so the sub's place in it is
+     * [COCKPIT_VIEW] meters ahead of the eyes (the sea's creatures keep to one plane, which is then
+     * a little way out of the windows), and the hull, the console and the sea all round come up.
+     */
+    fun cockpitFrame(on: Boolean, p: com.vrgames.deepsea.core.Dive?, v: SeaView, headY: Float?, dt: Double) {
+        if (headY != null && headY > 0.5f) eyeY = headY
+        val ck = cockpit ?: return
+        if (on != inCockpit) {
+            inCockpit = on
+            ck.root.enabled = on
+            sky?.enabled = !on
+            v.cockpitMode(on)
+            if (!on) {
+                machine?.setPos(Vector3(0f, 0f, -AHEAD - FARTHER))
+                machine?.transform()?.setScaleVector(Vector3(1f))
+            }
+        }
+        if (!on || p == null) { viewAt = null; v.cabinCentre = null; return }
+        val s = COCKPIT_SCALE
+        // Straight ahead is the followed animal (the sub keeps a little off to one side of it, at photo range), moved
+        // to smoothly so the view does not jump when it changes.
+        val want = p.follow?.at ?: p.sub.at
+        val c = viewAt?.let { it + (want - it) * (dt * 1.5).coerceAtMost(1.0) } ?: want
+        viewAt = c
+        v.cabinCentre = c
+        val at = c
+        v.cabinScale = s
+        v.cabinView = COCKPIT_VIEW
+        machine?.transform()?.setScaleVector(Vector3(s))
+        machine?.setPos(Vector3(-s * at.x.toFloat(), eyeY - s * (SeaView.BASE + at.y.toFloat()), -COCKPIT_VIEW))
+        ck.root.setPos(Vector3(0f, eyeY, 0f))
+        ck.debug = Game.debugCabin
+        // Test hook: "yaw=<deg>" or "pitch=<deg>" turns the whole scene about the eyes, as a turn of the head would.
+        Game.debugCabin?.let { d ->
+            val o = d.split(";").mapNotNull { it.split("=").takeIf { kv -> kv.size == 2 }?.let { kv -> kv[0].trim() to (kv[1].trim().toFloatOrNull() ?: 0f) } }.toMap()
+            val yaw = o["yaw"] ?: 0f
+            val pitch = o["pitch"] ?: 0f
+            if (yaw != 0f || pitch != 0f) world?.let { w ->
+                val pr = Math.toRadians(pitch.toDouble())
+                w.setPos(Vector3(0f, (eyeY - eyeY * kotlin.math.cos(pr)).toFloat(), (-eyeY * kotlin.math.sin(pr)).toFloat()))
+                w.transform().eulerAngles = EulerAngles(pitch, yaw, 0f)
+            }
+        }
+        if (Game.debugCabin != null && (logClock + dt).toInt() != logClock.toInt()) Log.i(TAG, "cabin eye $eyeY sub ${at.x},${at.y} machine ${machine?.transform()?.position} depth ${1.0 - at.y / com.vrgames.deepsea.core.Sea.H}")
+        logClock += dt
+        val depth = 1.0 - p.sub.at.y / com.vrgames.deepsea.core.Sea.H
+        ck.frame(dt, depth, p.sub.lamp, p.sub.speed * s)
+    }
 
     /** The scene is placed once and then stays, whatever the head does. It stays hidden until then. */
     fun frame(eye: Vector3?, rot: Quat?, dt: Double) {
@@ -343,6 +436,20 @@ private fun android.content.Context.findActivity(): android.app.Activity? {
         c = c.baseContext
     }
     return null
+}
+
+/** The cockpit view: the sea this many times larger than in the tank, its plane this far ahead of the eyes. */
+const val COCKPIT_SCALE = 12f
+// 4 m: even the largest thing, grown 12 times, stays outside the 1.5 m cabin (device test 2026-11-12: a turtle swam through).
+const val COCKPIT_VIEW = 4.0f
+
+private fun isUnder(e: Entity?, of: Entity): Boolean {
+    var cur = e
+    while (cur != null) {
+        if (cur === of) return true
+        cur = cur.getParent()
+    }
+    return false
 }
 
 // The 2026-11-08 device test: the cards and the tank 18 cm farther and higher (the tank through its taller plinth).
