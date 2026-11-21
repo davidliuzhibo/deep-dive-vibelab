@@ -31,6 +31,7 @@ import com.pico.spatial.ui.platform.PhysicalLengthConverter
 import com.vrgames.deepsea.GUIDE_ID
 import com.vrgames.deepsea.LEVELS_ID
 import com.vrgames.deepsea.ALBUM_ID
+import com.vrgames.deepsea.core.CabinLayout
 import com.vrgames.deepsea.core.Dive
 import com.vrgames.deepsea.core.Sea
 import com.vrgames.deepsea.core.Stages
@@ -46,6 +47,10 @@ const val PANEL_MENU = "menu"
 const val PANEL_NOTE = "note"
 const val PANEL_PHOTOS = "photos"
 const val PANEL_CABIN = "cabin"
+/** v0.5.2: the cabin's console keys and the console's copy in the cabin. */
+const val PANEL_CABIN_CONSOLE = "cabin_console"
+const val PANEL_CABIN_LAMP = "cabin_lamp"
+const val PANEL_CABIN_COPY = "cabin_copy"
 
 val Ink = Color(0xFFEAF6FF)
 val Lamp = Color(0xFFFFD86B)
@@ -133,7 +138,7 @@ fun CardPanel(c: PhysicalLengthConverter) {
         Text("深海潜航", fontSize = c.sz(0.046f), color = Lamp)
         Text("把一片海装进玻璃缸。开着小潜水器一层层往下，拍下它们，把样本带回来。", fontSize = c.sz(0.018f), color = Ink)
         Text("怎么玩", fontSize = c.sz(0.02f), color = Mint)
-        Text("· 看向水里捏一下：潜水器开过去。\n· 捏一条鱼：它自己靠近、拍照。\n· 越深越黑：只有灯照到才看得见。电量用完就结束。\n· 两种看法：默认看整只水缸（全局）。拍到一只动物后，潜水器会跟着它游，这时点「进入舱内看」，就坐进潜水器里从舷窗看它。", fontSize = c.sz(0.0165f), color = Ink)
+        Text("· 看向水里捏一下：潜水器开过去。\n· 捏一条鱼：它自己靠近、拍照。\n· 越深越黑：只有灯照到才看得见。电量用完就结束。\n· 两种视角：舱外视角看整只水缸；点「进入舱内视角（全沉浸）」，就坐进潜水器里，四周都是海，潜水器在水缸里怎么走，舱外的景物就怎么动。", fontSize = c.sz(0.0165f), color = Ink)
         if (Game.stars > 0) Text("已得 ${Game.stars} / ${Game.maxStars} 颗星，图鉴 ${Game.seen.size} / ${Sea.SPECIES.size}", fontSize = c.sz(0.016f), color = Mint)
         Row(horizontalArrangement = Arrangement.spacedBy(c.m(0.01f)), verticalAlignment = Alignment.CenterVertically) {
             CallToAction(c, if (Game.stars > 0) "接着下潜 →" else "下水 →") { Game.start() }
@@ -154,7 +159,7 @@ fun IntroPanel(c: PhysicalLengthConverter) {
         Text("三星：回来时电量还剩 ${(s.par / s.battery * 100).toInt()}% 以上。", fontSize = c.sz(0.015f), color = Dim)
         Row(horizontalArrangement = Arrangement.spacedBy(c.m(0.01f)), verticalAlignment = Alignment.CenterVertically) {
             CallToAction(c, "开始 →") { Game.begin() }
-            if (Game.canCabin) Pill(c, if (Game.cockpit) "在舱内 ✓" else "进入舱内看", Sky) { Game.toggleCockpit() }
+            if (Game.canCabin) Pill(c, if (Game.cockpit) "在舱内 ✓" else "进入舱内视角（全沉浸）", Sky) { Game.toggleCockpit() }
             Pill(c, "返回") { Game.toCard() }
         }
     }
@@ -183,7 +188,8 @@ fun HudPanel(c: PhysicalLengthConverter, toggle: (String) -> Unit) {
             Pill(c, "重来") { Game.retry() }
         }
         // The second view, offered where the hands already are.
-        if (Game.canCabin) Pill(c, if (Game.cockpit) "回到全局" else "进入舱内看（跟着${Game.play?.follow?.sp?.name ?: "它"}）", Sky) { Game.toggleCockpit() }
+        // v0.5: into the deep all round (Full Space); or pinch the sub in the tank and pull it toward you.
+        if (Game.diving) Pill(c, "回到舱外视角", Sky) { Game.requestSurface() } else Pill(c, "进入舱内视角（全沉浸）", Sky) { Game.toggleCockpit() }
         Row(horizontalArrangement = Arrangement.spacedBy(c.m(0.006f))) {
             Pill(c, "图鉴", Lamp) { toggle(ALBUM_ID) }
             Pill(c, "关卡") { toggle(LEVELS_ID) }
@@ -253,7 +259,7 @@ fun MenuPanel(c: PhysicalLengthConverter, toggle: (String) -> Unit, faceMe: () -
         Pill(c, if (Game.window == ALBUM_ID) "收起图鉴" else "深海图鉴") { toggle(ALBUM_ID) }
         Pill(c, if (Game.window == GUIDE_ID) "收起说明" else "潜航说明") { toggle(GUIDE_ID) }
         if (Game.gold) Pill(c, "万灯之海", Lamp) { Game.menuOpen = false; Game.show() }
-        Pill(c, if (Game.cockpit) "回到全局" else "进入舱内看", Sky) { Game.menuOpen = false; Game.toggleCockpit() }
+        if (Game.diving) Pill(c, "回到舱外视角", Sky) { Game.menuOpen = false; Game.requestSurface() } else Pill(c, "进入舱内视角（全沉浸）", Sky) { Game.menuOpen = false; Game.toggleCockpit() }
         Pill(c, "把水缸摆到我正前方") { faceMe() }
         Pill(c, if (Game.musicOn) "音乐：开" else "音乐：关") { Game.toggleMusic() }
         RestartPill(c)
@@ -295,12 +301,13 @@ fun PhotosPanel(c: PhysicalLengthConverter) {
     val context = androidx.compose.ui.platform.LocalContext.current
     Gauge(c, 0.4f, 0.3f) {
         Game.version
-        Text("照片屏　${Game.seen.size} / ${Sea.SPECIES.size}", fontSize = c.sz(0.02f), color = Lamp)
+        Text("照片屏　${Game.seen.size} / ${Sea.SPECIES.size}" + if (Game.seen.isNotEmpty()) "　（捏一张看大图）" else "", fontSize = c.sz(0.02f), color = Lamp)
         if (Game.seen.isEmpty()) Text("捏一条鱼或一样东西，拍下的照片会出现在这里。", fontSize = c.sz(0.015f), color = Dim)
         androidx.compose.foundation.layout.FlowRow(horizontalArrangement = Arrangement.spacedBy(c.m(0.006f)), verticalArrangement = Arrangement.spacedBy(c.m(0.005f)), maxItemsInEachRow = 6) {
             for (id in Game.seen.toList().takeLast(12)) {
                 val sp = runCatching { Sea.species(id) }.getOrNull() ?: continue
-                Column(Modifier.width(c.m(0.058f)), horizontalAlignment = Alignment.CenterHorizontally) {
+                // v0.5.1 (device 2026-11-19: the photos could not be opened): pinch one to see it large, with its story.
+                Column(Modifier.width(c.m(0.058f)).clickable { Game.viewing = id; Game.version++ }, horizontalAlignment = Alignment.CenterHorizontally) {
                     val pic = remember(id) {
                         runCatching { context.assets.open("thumbs/$id.png").use { android.graphics.BitmapFactory.decodeStream(it)?.asImageBitmap() } }.getOrNull()
                     }
@@ -314,21 +321,112 @@ fun PhotosPanel(c: PhysicalLengthConverter) {
     }
 }
 
+/** A big, bright key on the cabin's console (device 2026-11-20: the key button must stand out). */
+@Composable
+fun BigKey(c: PhysicalLengthConverter, text: String, color: Color = Lamp, onClick: () -> Unit) {
+    val shape = RoundedCornerShape(c.m(0.016f))
+    Text(
+        text,
+        Modifier.clip(shape).background(color).border(c.m(0.0025f), Color(0xFFFFF4E0), shape)
+            .clickable { onClick() }.padding(horizontal = c.m(0.026f), vertical = c.m(0.014f)),
+        fontSize = c.sz(0.028f),
+        color = Color(0xFF1A1420),
+        maxLines = 1,
+    )
+}
+
+/** A panel lying flat on the cabin's console deck, exactly [box]'s size (core.CabinLayout: nothing sinks into the deck). */
+@Composable
+private fun DeckPanel(c: PhysicalLengthConverter, box: CabinLayout.Panel, content: @Composable () -> Unit) {
+    val shape = RoundedCornerShape(c.m(0.016f))
+    Column(
+        Modifier.width(c.m(box.w.toFloat())).height(c.m(box.h.toFloat())).clip(shape).background(PanelBg)
+            .border(c.m(0.0015f), Color(0x8878C8F0), shape).padding(c.m(0.013f)),
+        verticalArrangement = Arrangement.spacedBy(c.m(0.006f), Alignment.CenterVertically),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) { content() }
+}
+
 /**
- * The cabin's screen on the console (device test 2026-11-12: in the old cockpit the text was covered and it was not clear
- * what to do). Watching only: what the sub follows, the depth, the lamp, the latest word, and the way back.
+ * The cabin's screen, flat on the console's deck in the middle (v0.5.2, device 2026-11-19: the old card stood half sunk
+ * into the console and its buttons were in the sunk half). The state, the sub's speed, the latest word, and one big key:
+ * 「回到舱外视角」.
  */
 @Composable
 fun CabinPanel(c: PhysicalLengthConverter) {
     Game.version
-    val p = Game.play ?: return
-    val f = p.follow
-    PanelBox(c, 0.44f) {
-        Text(if (f != null) "正在跟着：${f.sp.name}" else "潜水器", fontSize = c.sz(0.024f), color = Lamp)
-        Text("深度 ${com.vrgames.deepsea.core.Sea.meters(p.sub.at.y)} 米 · ${com.vrgames.deepsea.core.Sea.zoneAt(p.sub.at.y).title}　电量 ${(p.battery / p.stage.battery * 100).toInt()}%", fontSize = c.sz(0.016f), color = Ink)
-        Text("从前面的大舷窗看它游动。这里只观看；要拍别的、去别处，先回到全局。", fontSize = c.sz(0.014f), color = Dim)
-        Game.note?.let { Text(it, fontSize = c.sz(0.015f), color = Lamp) }
-        Pill(c, if (p.sub.lamp) "探照灯：开（点一下关）" else "探照灯：关（点一下开）", Sky) { Game.lamp() }
-        Pill(c, "回到全局", Mint) { Game.toggleCockpit() }
+    val p = Game.play
+    DeckPanel(c, CabinLayout.SCREEN) {
+        if (p == null) { BigKey(c, "回到舱外视角") { Game.requestSurface() }; return@DeckPanel }
+        val f = p.follow
+        Text(if (f != null) "正在跟着：${f.sp.name}" else "舱内视角", fontSize = c.sz(0.022f), color = Lamp, maxLines = 1)
+        Text("深度 ${Sea.meters(p.sub.at.y)} 米 · ${Sea.zoneAt(p.sub.at.y).title}　电量 ${(p.battery / p.stage.battery * 100).toInt()}%", fontSize = c.sz(0.016f), color = Ink, maxLines = 1)
+        Text(Game.cabinSpeed, fontSize = c.sz(0.018f), color = Sky, maxLines = 1)
+        val n = Game.note
+        Text(n ?: "右手边的小水缸里就是这只潜水器：捏缸里的水或动物，潜水器就开过去。", fontSize = c.sz(0.0145f), color = if (n != null) Lamp else Dim, maxLines = 2)
+        BigKey(c, "回到舱外视角") { Game.requestSurface() }
+        Text("也可以伸手捏住头顶舱盖的把手往下拉；一关结束也会自动回到舱外。", fontSize = c.sz(0.013f), color = Dim, maxLines = 2)
+    }
+}
+
+/** Left on the deck: 「打开控制台 / 收起控制台」, its words following what the console window really did. */
+@Composable
+fun CabinConsoleKey(c: PhysicalLengthConverter) {
+    Game.version
+    DeckPanel(c, CabinLayout.CONSOLE_KEY) {
+        BigKey(c, when { Game.consoleBusy -> "请稍候…"; Game.consoleUp -> "收起控制台"; else -> "打开控制台" }) { Game.toggleConsole() }
+        Text(if (Game.cabinConsoleCopy) "控制台在你左边" else "关卡、照片、菜单都在控制台", fontSize = c.sz(0.0125f), color = Dim, maxLines = 1)
+    }
+}
+
+/** Right on the deck: 「探照灯：开 / 关」 (its beams show in front of the window while it is on). */
+@Composable
+fun CabinLampKey(c: PhysicalLengthConverter) {
+    Game.version
+    val p = Game.play
+    val on = p?.sub?.lamp == true
+    DeckPanel(c, CabinLayout.LAMP_KEY) {
+        BigKey(c, if (on) "探照灯：开" else "探照灯：关", if (on) Lamp else Sky) { Game.lamp() }
+        val sunny = p != null && Sea.zoneAt(p.sub.at.y) == com.vrgames.deepsea.core.Zone.SUN
+        Text(
+            when { on && sunny -> "阳光带看得清：可以关灯省电"; on -> "灯光照在舷窗前"; else -> "点一下开灯" },
+            fontSize = c.sz(0.0125f), color = if (on && sunny) Mint else Dim, maxLines = 1,
+        )
+    }
+}
+
+/**
+ * v0.5.2: only when the console window will not come back in the cabin — a copy of it at the cabin's left: the dive's
+ * gauges and goals, the photos (pinch one to read it), the menu.
+ */
+@Composable
+fun CabinConsoleCopy(c: PhysicalLengthConverter, toggle: (String) -> Unit, version: String) {
+    Game.version
+    if (!Game.cabinConsoleCopy) {
+        androidx.compose.foundation.layout.Box(Modifier.width(c.m(0.01f)).height(c.m(0.01f)))
+        return
+    }
+    PanelBox(c, 0.46f) {
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Text("潜航控制台（舱内）", fontSize = c.sz(0.022f), color = Lamp)
+            Spacer(Modifier.weight(1f))
+            Pill(c, "收起") { Game.toggleConsole() }
+        }
+        if (Game.phase == Game.Phase.PLAYING) {
+            HudPanel(c, toggle)
+            PhotosPanel(c)
+        } else Text("这次下潜结束了：回到舱外看结果。", fontSize = c.sz(0.017f), color = Ink)
+        Game.viewing?.let { id ->
+            val sp = runCatching { Sea.species(id) }.getOrNull()
+            if (sp != null) {
+                Text("照片：${sp.name}", fontSize = c.sz(0.02f), color = Lamp)
+                Text(sp.fact, fontSize = c.sz(0.015f), color = Ink)
+                Row(horizontalArrangement = Arrangement.spacedBy(c.m(0.008f))) {
+                    Pill(c, "再听一遍", Sky) { Game.speak(id) }
+                    Pill(c, "关闭照片") { Game.viewing = null; Game.version++ }
+                }
+            }
+        }
+        MenuPanel(c, toggle, faceMe = {}, quit = { Game.quitApp("退出（舱内控制台）") }, version = version)
     }
 }

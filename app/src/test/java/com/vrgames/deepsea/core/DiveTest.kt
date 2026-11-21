@@ -178,4 +178,65 @@ class VoicesTest {
         d.steer(P(0.0, Sea.H / 2))
         assertEquals(null, d.follow)
     }
+
+    /**
+     * v0.5.2 (device 2026-11-19: in the cabin the sub seemed to stand still): following an animal, the sub keeps moving
+     * with it (it used to move only 4–12% of the time, once the animal was 13 cm away), and stays at photo range.
+     */
+    @Test
+    fun followingKeepsTheSubMoving() {
+        for (key in listOf("manta0", "turtle0", "lantern0")) {
+            val d = Dive(Stages.byId("c4"))
+            d.debugFollow(key)
+            val t = d.thing(key)!!
+            // A shy one is photographed (and so followed) with the lamp off; with it on, it hides in a corner.
+            if (t.sp.shy) d.toggleLamp()
+            repeat(300) { d.step(1.0 / 30) }
+            var moving = 0
+            var worst = 0.0
+            val n = 1800
+            repeat(n) {
+                val before = d.sub.at
+                d.step(1.0 / 30)
+                if ((d.sub.at - before).len() > 1e-5) moving++
+                worst = maxOf(worst, (t.at - d.sub.at).len())
+            }
+            println("$key: moving ${moving * 100 / n}% of the time, farthest ${"%.3f".format(worst)} m")
+            assertTrue("$key: the sub moved only ${moving * 100 / n}% of the time", moving > n * 0.6)
+            assertTrue("$key: lost it at $worst m", worst <= Dive.RANGE * 2 + t.sp.size)
+        }
+    }
+
+    /** v0.5.2: that motor work while following is counted at a quarter, so stars cost no more than before. */
+    @Test
+    fun followingCostsAQuarterOfTheMotor() {
+        fun followDrain(): Double {
+            val d = Dive(Stages.byId("a1"))
+            d.debugFollow("manta0")
+            val before = d.battery
+            repeat(900) { d.step(1.0 / 30) }
+            return before - d.battery
+        }
+        // Following for 30 s, against the same 30 s with the motor counted in full by hand.
+        val d = Dive(Stages.byId("a1"))
+        d.debugFollow("manta0")
+        var full = 0.0
+        var quarter = 0.0
+        repeat(900) {
+            d.step(1.0 / 30)
+            val motor = d.sub.speed / Dive.MAX_SPEED * 0.55 / 30
+            full += motor
+            quarter += motor * Dive.FOLLOW_POWER
+        }
+        assertTrue("the sub worked while following", full > 0.05)
+        assertEquals(0.25, quarter / full, 1e-9)
+        // And all told, half a minute of following drains little more than half a minute of standing still.
+        val still = Dive(Stages.byId("a1"))
+        val b0 = still.battery
+        repeat(900) { still.step(1.0 / 30) }
+        val idle = b0 - still.battery
+        val follow = followDrain()
+        println("30 s: following drains ${"%.2f".format(follow)}, standing ${"%.2f".format(idle)}")
+        assertTrue("following $follow vs standing $idle", follow <= idle * 1.12)
+    }
 }

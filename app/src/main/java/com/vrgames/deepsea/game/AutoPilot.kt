@@ -59,6 +59,19 @@ object AutoPilot {
             "open" -> Game.debugOpen = id
             "reset" -> { main.removeCallbacksAndMessages(null); Game.restart() }
             "stop" -> main.removeCallbacksAndMessages(null)
+            "state" -> Log.i(TAG, "state phase=${Game.phase} diving=${Game.diving} cockpit=${Game.cockpit} tank=${Game.tankOpen} tankMinimized=${Game.tankMinimized} tankClosedForCabin=${Game.tankClosedForCabin} console=${Game.consoleOpen} consoleMinimized=${Game.consoleMinimized} consoleUp=${Game.consoleUp} cabinCopy=${Game.cabinConsoleCopy} cabinTank=${Game.cabinTank != null} sub=${Game.play?.sub?.at} follow=${Game.play?.follow?.key} lamp=${Game.play?.sub?.lamp} ${Game.cabinSpeed} speaking=${Game.speaking} seen=${Game.seen.size} viewing=${Game.viewing}")
+            // v0.5.1: the hatch handle pulled down --es id metres (a hand pulling down), or 回到舱外视角, or a photo opened large.
+            "hatch" -> Game.debugHatch = id?.toDoubleOrNull() ?: 0.1
+            "out" -> Game.requestSurface()
+            "photo" -> { Game.viewing = id; Game.version++ }
+            "quit" -> Game.quitApp("test")
+            // v0.5.2: the cabin's 打开/收起控制台 (--es id on|off; logs "console on: true|false"), Home pressed in the cabin
+            // (the same path as a real stop), a pinch on the cabin's tank at a point of the sea (--es id x,y in tank metres,
+            // e.g. 0.3,0.7: the sub goes there), and the eye height measured again (--es id <seconds the head reads zeros>).
+            "console" -> Game.debugConsole(id != "off")
+            "home" -> Game.debugHome()
+            "cabintap" -> id?.split(",")?.mapNotNull { it.trim().toDoubleOrNull() }?.takeIf { it.size == 2 }?.let { Game.cabinTap(P(it[0], it[1])) } ?: Log.w(TAG, "cabintap needs --es id x,y")
+            "replace" -> Game.debugReplace(id?.toDoubleOrNull() ?: 0.0)
             else -> Log.w(TAG, "unknown command $cmd")
         }
     }

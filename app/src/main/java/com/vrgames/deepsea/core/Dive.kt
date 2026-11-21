@@ -214,10 +214,12 @@ class Dive(val stage: Stage, private val seen: (String) -> Boolean = { false }) 
 
     fun near(t: Thing) = (t.at - sub.at).len() <= RANGE + t.sp.size * 0.25
 
+    private fun standoffDistance(t: Thing) = RANGE * 0.7 + t.sp.size * 0.25
+
     private fun standoff(t: Thing): P {
         val d = sub.at - t.at
         val l = d.len().coerceAtLeast(1e-6)
-        return clamp(t.at + d * ((RANGE * 0.7 + t.sp.size * 0.25) / l))
+        return clamp(t.at + d * (standoffDistance(t) / l))
     }
 
     fun toggleLamp() {
@@ -245,8 +247,11 @@ class Dive(val stage: Stage, private val seen: (String) -> Boolean = { false }) 
         light()
         doJob()
         // Battery: the motor, the lamp, and more the deeper the pressure pumps work.
+        // v0.5.2: following an animal the sub now keeps moving all the time (it used to wait until the animal was 13 cm
+        // away); that motor work is counted at [FOLLOW_POWER], so watching an animal costs the stars no more than before.
         val deep = (Sea.H - sub.at.y) / Sea.H
-        battery -= dt * (0.35 + sub.speed / MAX_SPEED * 0.55 + (if (sub.lamp) 0.35 else 0.0) + deep * 0.25)
+        val motor = sub.speed / MAX_SPEED * 0.55 * (if (following) FOLLOW_POWER else 1.0)
+        battery -= dt * (0.35 + motor + (if (sub.lamp) 0.35 else 0.0) + deep * 0.25)
         if (battery < stage.battery * 0.2 && !warned) {
             warned = true
             events += Ev.Low
@@ -330,11 +335,17 @@ class Dive(val stage: Stage, private val seen: (String) -> Boolean = { false }) 
         }
     }
 
+    /** Keeping up with a photographed animal, with nothing else to do. */
+    val following get() = job == null && follow != null
+
     private fun doJob() {
         val f = follow
         if (job == null && f != null) {
-            // Keep up with the followed animal, at photo range, without crowding it.
-            if (!near(f)) sub.target = standoff(f)
+            // Keep up with the followed animal, at photo range, without crowding it. v0.5.2 (device 2026-11-19: in the
+            // cabin the sub seemed to stand still): it keeps after the animal whenever the photo distance is off by more
+            // than [FOLLOW_SLACK], not only once it is out of range, so the sub (and the sea outside the cabin) moves
+            // with it all the time.
+            if (abs((f.at - sub.at).len() - standoffDistance(f)) > FOLLOW_SLACK) sub.target = standoff(f)
             return
         }
         val (t, sample) = job ?: return
@@ -402,6 +413,10 @@ class Dive(val stage: Stage, private val seen: (String) -> Boolean = { false }) 
         const val FLEE = 0.2
         const val FLEE_SPEED = 0.035
         const val STARTLE = 0.5
+        /** Following: the sub chases when the photo distance is off by more than this (metres in the tank). */
+        const val FOLLOW_SLACK = 0.01
+        /** Following: the share of the motor's power counted against the battery. */
+        const val FOLLOW_POWER = 0.25
     }
 }
 

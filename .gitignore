@@ -1,10 +1,10 @@
 .gradle/
 .kotlin/
-.idea/
+.scratch/
 **/build/
 local.properties
 *.apk
 *.jks
 *.keystore
 .env*
-.scratch/
+__pycache__/

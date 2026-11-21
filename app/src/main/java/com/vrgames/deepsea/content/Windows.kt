@@ -33,6 +33,7 @@ private val CardBg = Color(0x26EAF6FF)
 /** 关卡: every dive with its stars (pick one to play), and the three trophies. */
 @Composable
 fun LevelsWindow() {
+    ClosesWithQuit(com.vrgames.deepsea.LEVELS_ID)
     Game.version
     Column(Modifier.fillMaxSize().background(WindowBg).padding(28.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         WindowHeader(LEVELS_ID, "关卡", 32.sp)
@@ -68,6 +69,7 @@ private val ZONE_COLOR = mapOf(Zone.SUN to Color(0xFF4FB6D8), Zone.TWILIGHT to C
 /** 深海图鉴: by zone, top to bottom, like the tank. A species shows its story once it has been photographed. */
 @Composable
 fun AlbumWindow() {
+    ClosesWithQuit(com.vrgames.deepsea.ALBUM_ID)
     Game.version
     Column(Modifier.fillMaxSize().background(WindowBg).padding(28.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         WindowHeader(ALBUM_ID, "深海图鉴", 32.sp)
@@ -95,6 +97,7 @@ fun AlbumWindow() {
 /** 潜航说明: how to drive, and the sea. */
 @Composable
 fun GuideWindow() {
+    ClosesWithQuit(com.vrgames.deepsea.GUIDE_ID)
     Game.version
     Column(Modifier.fillMaxSize().background(WindowBg).padding(28.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         WindowHeader(GUIDE_ID, "潜航说明", 32.sp)
@@ -109,6 +112,7 @@ fun GuideWindow() {
 
 private val GUIDE = listOf(
     "开船" to "看向水里捏一下，潜水器就开过去，你不用一直控制。看着一条鱼、一块石头捏一下，潜水器会自己靠过去，到了就拍照或采样。手指到的东西会变亮。金色小圈是任务要找的；移动的金圈是潜水器正要去的地方；任务做完后，海面会出现金色光带，开上去就算回来了。",
+    "舱内视角" to "捏住水缸里的潜水器往自己这边一拉，或点「进入舱内视角（全沉浸）」，就坐进了潜水器。右手边有一只小水缸，里面就是你这只潜水器：捏缸里的水或动物，潜水器就开过去，舷窗外的海跟着往反方向流过。面前的操纵台上，左边是「打开控制台」（叫回控制台窗口，再点一下收起），中间是屏幕和「回到舱外视角」，右边是探照灯开关。\n回到舱外有三种办法：点「回到舱外视角」；伸手捏住头顶舱盖的把手，往下拉 7 厘米；一关结束时也会自动回到舱外。",
     "探照灯" to "灯开着，附近的东西才看得见，但更费电，胆小的动物（棱皮龟、大王乌贼）也会躲开。关灯时，发光的生物反而更容易找。",
     "电量" to "开得越快、下得越深、灯开得越久，电用得越快。电量用完这次下潜就失败。任务里有「回到海面」就要留够回程的电。",
     "耐压舱" to "红线以下这个舱下不去。第二章能下到午夜带，第三章能到海底。",

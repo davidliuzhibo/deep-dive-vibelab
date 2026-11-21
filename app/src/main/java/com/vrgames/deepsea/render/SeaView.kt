@@ -52,6 +52,8 @@ sealed interface Target {
  * silhouette until the lamp reaches it.
  */
 class SeaView(private val models: Map<String, Entity>, private val tex: Map<String, TextureResource>) {
+    /** v0.5: each view (the tank's, the deep's) has its own sounds, placed in its own sea. */
+    var sound: com.vrgames.deepsea.render.Sound? = null
     val root = Entity()
     val sea = Entity()
     private var life = Entity().also { sea.addChild(it) }
@@ -147,12 +149,40 @@ class SeaView(private val models: Map<String, Entity>, private val tex: Map<Stri
      * Whether a thing, grown to the cabin view's scale, would reach into the cabin (radius [Cockpit.RH]) or past the
      * windows: those are not shown in the cabin view (device test 2026-11-12: a turtle swam through the cabin).
      */
+    /**
+     * v0.5.1 (device 2026-11-19: the sub swam through the animals): the sub keeps to a lane near the front glass
+     * ([SUB_Z]) and every creature or find to one of three lanes behind it, so they pass in front of and behind each other,
+     * never through. In the cabin (the sea grown twelve times) the lanes are a metre or so apart.
+     */
+    fun laneZ(t: Thing): Float =
+        if (t.sp.kind == com.vrgames.deepsea.core.Kind.THING) -0.05f
+        else -0.02f - 0.03f * (kotlin.math.abs(t.key.hashCode()) % 3)
+
     private fun intoCabin(t: Thing): Boolean {
         val c = cabinCentre ?: subAtForCabin
         val dx = (t.at.x - c.x) * cabinScale
         val dy = (t.at.y - c.y) * cabinScale
-        val dist = kotlin.math.sqrt(dx * dx + dy * dy + (cabinView * cabinView).toDouble())
+        // v0.5.2: the sea's plane (z = 0) stands [cabinView] ahead, a lane [laneZ] behind it; the old sum added the sub's own
+        // lane (SUB_Z, 0.72 m grown) on top and took things for 0.72 m farther than they are.
+        val dz = cabinView - laneZ(t) * cabinScale
+        val dist = kotlin.math.sqrt(dx * dx + dy * dy + (dz * dz).toDouble())
         return dist - t.sp.size * cabinScale * 0.6 < Cockpit.RH + 0.3
+    }
+
+    /**
+     * v0.5: in the tank window only the tank itself shows — the plinth and the trophy shelf are the lab's (the console
+     * window shows the trophies).
+     */
+    fun windowMode() {
+        root.getChildren().filter { it !== sea }.forEach { it.enabled = false }
+    }
+
+    private var subHit: Entity? = null
+    /** Whether [e] is (part of) the sub: pinched and pulled toward oneself, it dives. */
+    fun isSub(e: Entity?): Boolean {
+        var cur = e
+        while (cur != null) { if (cur === subHit) return true; cur = cur.getParent() }
+        return false
     }
 
     fun cockpitMode(on: Boolean) {
@@ -188,7 +218,8 @@ class SeaView(private val models: Map<String, Entity>, private val tex: Map<Stri
                 listOf(Vector3(-x, -y, 0f), Vector3(x, -y, 0f), Vector3(x, y, 0f), Vector3(-x, y, 0f)), listOf(0, 1, 2, 0, 2, 3),
                 List(4) { Vector3(0f, 0f, 1f) }, List(4) { Vector4(1f, 0f, 0f, 1f) }, listOf(Vector2(0f, 0f), Vector2(1f, 0f), Vector2(1f, 1f), Vector2(0f, 1f)),
             ),
-            BoundingBox(Vector3(-x, -y, -0.001f), Vector3(x, y, 0.001f)), name,
+            // Centre and half size (v0.5: corners made the tank's walls cull wrongly).
+            BoundingBox(Vector3(0f, 0f, 0f), Vector3(x, y, 0.001f)), name,
         )
     }
 
@@ -316,6 +347,12 @@ class SeaView(private val models: Map<String, Entity>, private val tex: Map<Stri
         }
     }
 
+    /** v0.5.2 (test hook "cabintap"): the piece of water a pinch at [at] lands on, as [target] would give it. */
+    fun waterAt(at: P): Target.Water? {
+        val e = waterOf.entries.minByOrNull { (it.value - at).len() } ?: return null
+        return if ((e.value - at).len() <= CELL) Target.Water(e.value) else null
+    }
+
     fun target(e: Entity?): Target? {
         var cur = e
         while (cur != null) {
@@ -342,6 +379,11 @@ class SeaView(private val models: Map<String, Entity>, private val tex: Map<Stri
             life.addChild(s)
             subView = s
             s.enabled = !cockpit
+            // v0.5: the sub takes a pinch of its own (pulled out of the tank toward the player, it dives).
+            s.components.set(CollisionComponent(listOf(ShapeResource.createBox(Vector3(0.12f, 0.08f, 0.12f))), PhysicsMaterialResource()))
+            s.components.set(InteractableComponent())
+            s.components.set(HoverEffectComponent())
+            subHit = s
         } ?: run { subView = null }
         cone = model(MeshResource.createCone(1f, 1f), lampCone).also { life.addChild(it) }
         // A flat glow in the plane of the sub. A ball this big would stand out through the glass and cut the panels.
@@ -401,7 +443,7 @@ class SeaView(private val models: Map<String, Entity>, private val tex: Map<Stri
         val want = if (s.heading > 0) Looks.yaw("sub") else Looks.yaw("sub") + 180f
         subYaw += (want - subYaw) * (dt * 4).toFloat().coerceAtMost(1f)
         subView?.let {
-            it.setPos(Vector3(s.at.x.toFloat(), y - Looks.height("sub") * Looks.mid("sub"), 0f))
+            it.setPos(Vector3(s.at.x.toFloat(), y - Looks.height("sub") * Looks.mid("sub"), SUB_Z))
             it.transform().eulerAngles = EulerAngles(0f, subYaw, 0f)
         }
         cone?.let { c ->
@@ -409,18 +451,18 @@ class SeaView(private val models: Map<String, Entity>, private val tex: Map<Stri
             val on = s.lamp && !cockpit
             if (c.enabled != on) c.enabled = on
             val len = (Dive.LAMP * 0.95).toFloat()
-            c.setPos(Vector3((s.at.x + s.heading * (len / 2 + 0.03)).toFloat(), y, 0f))
+            c.setPos(Vector3((s.at.x + s.heading * (len / 2 + 0.03)).toFloat(), y, SUB_Z))
             c.transform().eulerAngles = EulerAngles(0f, 0f, if (s.heading > 0) 90f else -90f)
             c.transform().setScaleVector(Vector3(len * 0.45f, len, len * 0.45f))
         }
         halo?.let { h ->
             val on = s.lamp && !cockpit
             if (h.enabled != on) h.enabled = on
-            h.setPos(Vector3(s.at.x.toFloat(), y, -0.01f))
+            h.setPos(Vector3(s.at.x.toFloat(), y, SUB_Z - 0.01f))
         }
         marks(p)
         if ((clock * 3).toInt() != ((clock - dt) * 3).toInt() && s.speed > 0.01) {
-            bubbles.emit(Vec3(s.at.x - s.heading * 0.04, s.at.y, 0.0), 1, 0.01, 2.2, 0.0035f, Vec3(0.0, 0.05, 0.0))
+            bubbles.emit(Vec3(s.at.x - s.heading * 0.04, s.at.y, SUB_Z.toDouble()), 1, 0.01, 2.2, 0.0035f, Vec3(0.0, 0.05, 0.0))
         }
         // The vent smokes, the ones that glow shed sparks.
         if (p.stage.floor < 0.1 && (clock * 5).toInt() != ((clock - dt) * 5).toInt()) {
@@ -452,7 +494,7 @@ class SeaView(private val models: Map<String, Entity>, private val tex: Map<Stri
             if (on) {
                 val (bw, bh) = Looks.box(t.sp.id)
                 val mid = t.at.y + if (t.sp.kind == Kind.THING) bh / 2 else 0.0
-                r.setPos(Vector3(t.at.x.toFloat(), mid.toFloat(), 0.03f))
+                r.setPos(Vector3(t.at.x.toFloat(), mid.toFloat(), laneZ(t) + 0.03f))
                 r.transform().eulerAngles = EulerAngles(90f, 0f, 0f)
                 r.setScale((maxOf(bw, bh) / 0.06 * 0.62 * pulse).toFloat())
             }
@@ -483,14 +525,15 @@ class SeaView(private val models: Map<String, Entity>, private val tex: Map<Stri
         val s = t.sp
         val swims = s.swim > 0
         val base = if (swims) Looks.height(s.id) * Looks.mid(s.id) else 0f
-        v.e.setPos(Vector3(t.at.x.toFloat(), t.at.y.toFloat() - base, 0f))
+        val lz = laneZ(t)
+        v.e.setPos(Vector3(t.at.x.toFloat(), t.at.y.toFloat() - base, lz))
         if (v.show >= 0) {
             v.show += dt
             val k = (v.show / PERFORM_S).coerceIn(0.0, 1.0)
             val up = sin(k * PI)
             // Turn once about itself while lifting and growing a little, then settle back.
             val h = Looks.height(s.id) * (1f + 0.35f * up.toFloat())
-            v.e.setPos(Vector3(t.at.x.toFloat(), (t.at.y - base + up * 0.05).toFloat(), (up * 0.1).toFloat()))
+            v.e.setPos(Vector3(t.at.x.toFloat(), (t.at.y - base + up * 0.05).toFloat(), lz + (up * 0.06).toFloat()))
             v.body.transform().eulerAngles = EulerAngles(0f, v.yaw + (360 * ease(k)).toFloat(), 0f)
             v.body.transform().setScaleVector(Vector3(h))
             if ((v.show * 5).toInt() != ((v.show - dt) * 5).toInt()) glitter.emit(Vec3(t.at.x, t.at.y, 0.06), 7, 0.07, 1.1, 0.003f)
@@ -522,7 +565,7 @@ class SeaView(private val models: Map<String, Entity>, private val tex: Map<Stri
             v.shadow.enabled = v.dark
         }
         v.halo?.let { h ->
-            h.setPos(Vector3(t.at.x.toFloat(), t.at.y.toFloat(), 0f))
+            h.setPos(Vector3(t.at.x.toFloat(), t.at.y.toFloat(), lz))
             val pulse = 0.85f + 0.15f * sin(clock * 2.6 + t.phase).toFloat()
             h.setScale((Looks.box(s.id).first * 0.38 * pulse).toFloat())
         }
@@ -561,6 +604,9 @@ class SeaView(private val models: Map<String, Entity>, private val tex: Map<Stri
     fun receiveAll() = receive(root)
 
     companion object {
+        /** The sub's lane, toward the front glass (the tank is 0.3 deep). */
+        const val SUB_Z = 0.06f
+
         const val PERFORM_S = 5.0
         fun ease(t: Double) = t * t * (3 - 2 * t)
 

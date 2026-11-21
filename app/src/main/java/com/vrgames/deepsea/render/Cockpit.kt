@@ -24,6 +24,7 @@ import com.pico.spatial.core.math.EulerAngles
 import com.pico.spatial.core.math.Vector2
 import com.pico.spatial.core.math.Vector3
 import com.pico.spatial.core.math.Vector4
+import com.vrgames.deepsea.core.CabinLayout
 import com.vrgames.deepsea.core.Vec3
 import kotlin.math.acos
 import kotlin.math.cos
@@ -47,9 +48,6 @@ class Cockpit {
     // Window rims: dark gunmetal, thin (device test 2026-11-12: big gold rings round the windows read as strange gold shapes).
     private val rimMat = pbr(color(0.22f, 0.24f, 0.27f), metallic = 0.85f, roughness = 0.35f, emissive = color(0.02f, 0.025f, 0.03f)).shared()
     private val consoleMat = pbr(color(0.1f, 0.12f, 0.15f), metallic = 0.6f, roughness = 0.4f, emissive = color(0.02f, 0.025f, 0.03f)).shared()
-    private val lampOn = pbr(color(1f, 0.85f, 0.4f), roughness = 0.3f, emissive = color(1f, 0.75f, 0.3f)).shared()
-    private val lampOff = pbr(color(0.25f, 0.22f, 0.18f), roughness = 0.5f, emissive = color(0.05f, 0.04f, 0.02f)).shared()
-    private val dialMat = pbr(color(0.12f, 0.2f, 0.26f), roughness = 0.3f, emissive = color(0.08f, 0.3f, 0.42f)).shared()
 
     // Declared before the entities that use it (property initializers run in order).
     private val sunMat = UnlitMaterial.create(BlendingMode.ADD).apply { setBaseColorTexture(TextureResource.create(radial())) }.shared()
@@ -62,12 +60,19 @@ class Cockpit {
     private val backdrop = ModelEntity(sphere, water).apply { setScale(BACKDROP) }.also { root.addChild(it) }
     /** The sun through the surface, overhead: strong near the top, gone by the twilight zone. */
     private val sunDisc = softDisc().also { d -> root.addChild(d) }
-    private val snow = Sparks("cockpit_snow", 180, sphere, glow(color(0.85f, 0.9f, 1f, 0.55f)).shared()).also { root.addChild(it.entity) }
+    /** v0.5.2: specks fixed in the sea, streaming past the windows as the sub moves (they replace the drifting snow). */
+    val motes = Motes(sphere, glow(color(0.85f, 0.9f, 1f, 0.55f)).shared()).also { root.addChild(it.entity) }
 
-    /** The lamp switch on the console (pinch it). */
-    val lampButton: Entity
-    private val lampCap: Entity
-    private var lampShown: Boolean? = null
+    /**
+     * v0.5.2 (device 2026-11-19: the lamp showed nothing in the cabin): two beams from under the front window out into the
+     * sea while the lamp is on.
+     */
+    private val beamMat = glow(color(0.8f, 0.9f, 1f, 0.12f)).apply { setCullingMode(MaterialCullingMode.NONE); setDepthWrite(false) }.shared()
+    private val beams = Entity().also { root.addChild(it) }
+    private var beamsOn: Boolean? = null
+
+    /** v0.5: the hatch handle pinched overhead. */
+    val hatch: Entity
     private var clock = 0.0
 
     private val hull = ModelEntity(hullMesh(), hullMat)
@@ -93,33 +98,51 @@ class Cockpit {
             ring.transform().setQuaternion(quatFromY(d))
             rims.addChild(ring)
         }
-        // The pilot's console under the big front window: a desk across the cabin, its top tipped up toward the player,
-        // with the screen panel (an attachment the stage puts on it) in the middle, the lamp switch at the right and two
-        // gauges at the left. Side pillars and a floor make it read as the inside of a sub, not a ball.
-        val console = Entity().apply { setPos(Vector3(0f, -0.5f, -0.6f)); transform().eulerAngles = EulerAngles(30f, 0f, 0f) }
-        console.addChild(ModelEntity(MeshResource.createBox(Vector3(1.2f, 0.05f, 0.42f), 0.02f), consoleMat))
+        // The pilot's console under the big front window: a desk across the cabin, its top tipped up toward the player.
+        // v0.5.2: 12 cm farther out (core.CabinLayout), and its controls are the panels the stage lays flat on its deck
+        // (left 打开控制台, middle the screen and 回到舱外视角, right 探照灯); the two blue dials and the unlabelled yellow
+        // lamp disc are gone.
+        val console = Entity().apply {
+            setPos(Vector3(0f, CabinLayout.CONSOLE_Y.toFloat(), CabinLayout.CONSOLE_Z.toFloat()))
+            transform().eulerAngles = EulerAngles(CabinLayout.CONSOLE_TILT.toFloat(), 0f, 0f)
+        }
+        console.addChild(ModelEntity(MeshResource.createBox(Vector3(CabinLayout.DECK_W.toFloat(), CabinLayout.DECK_T.toFloat(), CabinLayout.DECK_D.toFloat()), 0.02f), consoleMat))
         console.addChild(ModelEntity(MeshResource.createBox(Vector3(1.24f, 0.03f, 0.03f), 0.01f), rimMat).apply { setPos(Vector3(0f, 0.03f, 0.21f)) })
-        // createCylinder takes height, then radius: two small gauge faces.
-        for (k in 0 until 2) console.addChild(ModelEntity(MeshResource.createCylinder(0.012f, 0.032f), dialMat).apply { setPos(Vector3(-0.46f + k * 0.1f, 0.03f, 0.0f)) })
-        lampCap = ModelEntity(MeshResource.createCylinder(0.03f, 0.05f), lampOff).apply { setPos(Vector3(0.46f, 0.035f, 0.02f)) }
-        lampButton = Entity().apply {
-            addChild(lampCap)
-            components.set(CollisionComponent(listOf(ShapeResource.createBox(Vector3(0.16f, 0.1f, 0.16f)).offsetByTranslation(Vector3(0.46f, 0.04f, 0.02f))), PhysicsMaterialResource()))
+        // The lamp's two beams: from just outside the front window, low, out ahead (a cone's tip is its +y end).
+        for (side in listOf(-1f, 1f)) {
+            val len = 5f
+            beams.addChild(ModelEntity(MeshResource.createCone(1f, 1f).shared(), beamMat).apply {
+                setPos(Vector3(side * 0.32f, -0.42f, -1.58f - len / 2))
+                transform().eulerAngles = EulerAngles(90f, 0f, 0f)
+                transform().setScaleVector(Vector3(0.85f, len, 0.85f))
+            })
+        }
+        beams.enabled = false
+        // v0.5: the hatch handle overhead, a little ahead: pinched and pulled down, the sub surfaces.
+        hatch = Entity().apply {
+            setPos(Vector3(0f, 0.38f, -0.18f))
+            addChild(ModelEntity(MeshResource.createBox(Vector3(0.22f, 0.025f, 0.03f), 0.008f), rimMat))
+            addChild(ModelEntity(MeshResource.createBox(Vector3(0.02f, 0.08f, 0.02f), 0.005f), rimMat).apply { setPos(Vector3(-0.09f, 0.045f, 0f)) })
+            addChild(ModelEntity(MeshResource.createBox(Vector3(0.02f, 0.08f, 0.02f), 0.005f), rimMat).apply { setPos(Vector3(0.09f, 0.045f, 0f)) })
+            components.set(CollisionComponent(listOf(ShapeResource.createBox(Vector3(0.3f, 0.14f, 0.14f))), PhysicsMaterialResource()))
             components.set(InteractableComponent())
             components.set(HoverEffectComponent())
         }
-        console.addChild(lampButton)
+        root.addChild(hatch)
         desk.addChild(console)
         // The desk's front panel down to the floor, and the floor.
-        desk.addChild(ModelEntity(MeshResource.createBox(Vector3(1.2f, 0.7f, 0.04f), 0.01f), consoleMat).apply { setPos(Vector3(0f, -0.95f, -0.78f)) })
+        desk.addChild(ModelEntity(MeshResource.createBox(Vector3(1.2f, 0.7f, 0.04f), 0.01f), consoleMat).apply { setPos(Vector3(0f, -0.95f, CabinLayout.FRONT_PLATE_Z.toFloat())) })
         desk.addChild(ModelEntity(MeshResource.createBox(Vector3(2.2f, 0.04f, 2.2f), 0.01f), hullMat).apply { setPos(Vector3(0f, -1.2f, -0.2f)) })
     }
 
+    /** The handle follows the pull ([metres] down, up to 12 cm). */
+    fun pullHatch(metres: Double) { hatch.setPos(Vector3(0f, (0.38 - metres.coerceIn(0.0, 0.12)).toFloat(), -0.18f)) }
+
     /**
-     * Once a frame while the cockpit is shown: [depth] from 0 at the surface to 1 at the sea floor,
-     * [lamp] on or off, [moving] the sub's speed (the snow streams past faster).
+     * Once a frame while the cockpit is shown: [depth] from 0 at the surface to 1 at the sea floor, [lamp] on or off,
+     * ([dx], [dy]) how far the sea moved past the windows this frame (metres; the opposite of the sub's move).
      */
-    fun frame(dt: Double, depth: Double, lamp: Boolean, moving: Double) {
+    fun frame(dt: Double, depth: Double, lamp: Boolean, dx: Double, dy: Double) {
         clock += dt
         val dbg = debug
         if (dbg != debugDone) {
@@ -127,7 +150,7 @@ class Cockpit {
             val opts = dbg.orEmpty().split(";").mapNotNull { it.split("=").takeIf { kv -> kv.size == 2 }?.let { kv -> kv[0].trim() to kv[1].trim() } }.toMap()
             val hide = opts["hide"].orEmpty().split(",").map { it.trim() }.toSet()
             hull.enabled = "hull" !in hide; rims.enabled = "rims" !in hide; desk.enabled = "desk" !in hide
-            backdrop.enabled = "backdrop" !in hide; snow.entity.enabled = "snow" !in hide
+            backdrop.enabled = "backdrop" !in hide; motes.entity.enabled = "snow" !in hide && "motes" !in hide
             backdrop.setScale(opts["bd"]?.toFloatOrNull() ?: BACKDROP)
             android.util.Log.i("DeepCabin", "debug $dbg")
         }
@@ -137,18 +160,10 @@ class Cockpit {
         sunDisc.enabled = sun > 0.01f
         sunMat.setBaseColor(color(sun * 0.9f, sun * 0.95f, sun, sun))
         if ("sun" in debugDone.orEmpty()) sunDisc.enabled = false
-        if (lampShown != lamp) {
-            lampShown = lamp
-            setMaterials(lampCap, if (lamp) lampOn else lampOff)
-        }
-        // More snow the deeper, as the sea outside fills with falling specks.
-        val rate = 4 + 18 * depth
-        if ((clock * rate).toInt() != ((clock - dt) * rate).toInt()) {
-            val r = java.util.Random()
-            val at = Vec3((r.nextDouble() - 0.5) * 6, (r.nextDouble() - 0.3) * 4, -1.8 - r.nextDouble() * 5)
-            snow.emit(at, 1, 0.01, 7.0, (0.006 + 0.01 * r.nextDouble()).toFloat(), Vec3(0.0, -0.05 - 0.1 * moving, 0.08 * moving))
-        }
-        snow.update(dt, 0.05)
+        if (beamsOn != lamp) { beamsOn = lamp; beams.enabled = lamp }
+        // The beams show more the darker the sea (in sunlight they are hardly needed).
+        if (lamp) { val a = (0.10 + 0.10 * depth.coerceIn(0.0, 1.0)).toFloat(); beamMat.setBaseColor(color(0.8f * a, 0.9f * a, a, a)) }
+        motes.frame(dx, dy, dt)
     }
 
     private fun softDisc(): Entity = Entity().apply {
@@ -225,7 +240,7 @@ class Cockpit {
                 idx += listOf(base, base + 2, base + 1, base, base + 3, base + 2)
             }
             val r = RH.toFloat()
-            return MeshResource.createWithMeshModel(MeshModel(pos, idx, nor, tan, uv), BoundingBox(Vector3(-r, -r, -r), Vector3(r, r, r)), "cockpit_hull_v3").shared()
+            return MeshResource.createWithMeshModel(MeshModel(pos, idx, nor, tan, uv), BoundingBox(Vector3(0f, 0f, 0f), Vector3(r, r, r)), "cockpit_hull_v3").shared()
         }
 
         private fun quad(s: Float): MeshResource {
@@ -235,7 +250,8 @@ class Cockpit {
                     listOf(Vector3(-h, -h, 0f), Vector3(h, -h, 0f), Vector3(h, h, 0f), Vector3(-h, h, 0f)), listOf(0, 1, 2, 0, 2, 3),
                     List(4) { Vector3(0f, 0f, 1f) }, List(4) { Vector4(1f, 0f, 0f, 1f) }, listOf(Vector2(0f, 0f), Vector2(1f, 0f), Vector2(1f, 1f), Vector2(0f, 1f)),
                 ),
-                BoundingBox(Vector3(-h, -h, -0.001f), Vector3(h, h, 0.001f)), "cockpit_sun",
+                // BoundingBox(a, b) is centre and half size (v0.5; corners made it cull when looked at from some sides).
+                BoundingBox(Vector3(0f, 0f, 0f), Vector3(h, h, 0.001f)), "cockpit_sun",
             ).shared()
         }
 
