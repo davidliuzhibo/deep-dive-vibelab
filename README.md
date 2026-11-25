@@ -1,6 +1,6 @@
 # 深海潜航
 
-PICO Vibe Lab 原作品版本更新。版本 0.5.2 / versionCode 9。Android 包名 `com.vrgames.deepsea`。
+PICO Vibe Lab 原作品版本更新。版本 0.7.0 / versionCode 11。Android 包名 `com.vrgames.deepsea`。
 
 本版变更见[更新说明](更新说明.md)。正常构建使用仓库内已落盘的代码和素材，不需要模型生成服务。
 

@@ -96,6 +96,13 @@ fun DeepStage() {
     val openSea = remember { arrayOfNulls<OpenSea>(1) }
     val tankRef = remember { arrayOfNulls<SeaView>(1) }
     val motor = remember { arrayOfNulls<Motor>(1) }
+    // v0.6.0: the deep's ambience loop, the cabin's own sounds, the sunlight dimmed with depth, one frame queued at most.
+    val ambience = remember { arrayOfNulls<Motor>(1) }
+    val cabinSound = remember { arrayOfNulls<Sound>(1) }
+    val sunRef = remember { arrayOfNulls<Entity>(1) }
+    val pending = remember { java.util.concurrent.atomic.AtomicBoolean(false) }
+    val pendingDt = remember { doubleArrayOf(0.0) }
+    val sounds = remember { CabinSounds() }
     val motion = remember { CabinMotion() }
     val panels = remember { HashMap<String, Entity>() }
     val hatchPull = remember { doubleArrayOf(-1.0) }
@@ -161,6 +168,7 @@ fun DeepStage() {
     DisposableEffect(lifecycle) {
         val music = Music(context).also { it.muted = !Game.musicOn }
         val hum = Motor(context).also { motor[0] = it }
+        val amb = Motor(context, "audio/deep_amb.wav", 0.25f, 0.75f, 1f, 0.8f).also { ambience[0] = it }
         // v0.5.2 (device 2026-11-19: Home in the cabin only stopped the voice, the tank stayed open): stopped and not back
         // within [HOME_WAIT_MS], not surfacing and not quitting, the cabin was left with Home: every window closes.
         val stopped = booleanArrayOf(false)
@@ -184,8 +192,8 @@ fun DeepStage() {
         Game.debugHome = { Log.i(TAG, "test home: as if Home were pressed in the cabin"); onStop() }
         val observer = androidx.lifecycle.LifecycleEventObserver { _, e ->
             when (e) {
-                androidx.lifecycle.Lifecycle.Event.ON_RESUME -> { music.resume(); hum.resume() }
-                androidx.lifecycle.Lifecycle.Event.ON_PAUSE -> { music.pause(); hum.pause() }
+                androidx.lifecycle.Lifecycle.Event.ON_RESUME -> { music.resume(); hum.resume(); amb.resume() }
+                androidx.lifecycle.Lifecycle.Event.ON_PAUSE -> { music.pause(); hum.pause(); amb.pause() }
                 androidx.lifecycle.Lifecycle.Event.ON_START -> { if (stopped[0]) Log.i(TAG, "cabin started again"); stopped[0] = false; main.removeCallbacks(homeCheck) }
                 androidx.lifecycle.Lifecycle.Event.ON_STOP -> { Game.stopNarration(); onStop() }
                 else -> {}
@@ -199,6 +207,8 @@ fun DeepStage() {
             music.release()
             hum.release()
             if (motor[0] === hum) motor[0] = null
+            amb.release()
+            if (ambience[0] === amb) ambience[0] = null
         }
     }
     LaunchedEffect(Game.playVersion, view) {
@@ -265,13 +275,14 @@ fun DeepStage() {
             AttachmentPanel(PANEL_CABIN_CONSOLE) { CabinConsoleKey(converter) }
             AttachmentPanel(PANEL_CABIN_LAMP) { CabinLampKey(converter) }
             AttachmentPanel(PANEL_CABIN_COPY) { CabinConsoleCopy(converter, toggleWindow, appVersion) }
+            AttachmentPanel(PANEL_CABIN_GAUGES) { CabinGauges(converter) }
         },
         update = { _, attachments -> view?.let { attach(seat, attachments, panels) } },
         initial = { content, attachments ->
             content.addEntity(Entity().apply {
                 components.set(DirectionalLightComponent(Color(0xFFFFE9D0).toColor4(), 1000f, false))
                 components[TransformComponent::class.java]?.setEulerAngles(EulerAngles(-65f, 15f, 0f))
-            })
+            }.also { sunRef[0] = it })
             val tex = HashMap<String, TextureResource>()
             var ibl: TextureResource? = null
             withContext(Dispatchers.IO) {
@@ -281,18 +292,18 @@ fun DeepStage() {
                 ibl = runCatching { TextureResource.load("textures/ibl_lab.ktx", LoadType.FROM_ASSETS, TextureCreateOption().apply { textureEncoding = TextureEncoding.LINEAR }).shared() }.getOrNull()
             }
             val models = HashMap<String, Entity>()
-            for (name in SEA_MODELS) runCatching { Entity.loadSuspend("asset://models/$name.glb") }.onSuccess { models[name] = it }
+            for (name in SEA_MODELS + com.vrgames.deepsea.render.CabinDressing.MODELS) runCatching { Entity.loadSuspend("asset://models/$name.glb") }.onSuccess { models[name] = it }
             val world = Entity()
             content.addEntity(world)
             val v = SeaView(models, tex)
             seat.world = world
             seat.machine = v.root
             world.addChild(v.root)
-            val ck = Cockpit().also { it.root.enabled = false }
+            val ck = Cockpit().also { it.root.enabled = false; it.dress(models) }
             world.addChild(ck.root)
             seat.cockpit = ck
             cockpitRef[0] = ck
-            val os = OpenSea(tex["sand"])
+            val os = OpenSea(tex["sand"], models)
             world.addChild(os.root)
             openSea[0] = os
             // v0.5.2: the cabin's own tank on the right (core.CabinLayout), the same dive and the same sub as the tank window.
@@ -309,6 +320,7 @@ fun DeepStage() {
             Log.i(TAG, "cabin panels: " + CabinLayout.PANELS.joinToString("; ") { pl -> val q = CabinLayout.panelCentre(pl); "${pl.id} at ${"%.3f".format(q.x)},${"%.3f".format(q.y)},${"%.3f".format(q.z)} lowest corner ${"%.1f".format(CabinLayout.panelCorners(pl).minOf { CabinLayout.aboveDeck(it) } * 1000)} mm over the deck" })
             attach(seat, attachments, panels)
             v.sound = Sound(v.sea).also { it.load() }
+            cabinSound[0] = Sound(ck.root).also { it.load() }
             Game.view = v
             Game.sound = v.sound
             view = v
@@ -327,7 +339,14 @@ fun DeepStage() {
                     Log.i(TAG, "test hatch pulled ${"%.2f".format(pulled)} m")
                     if (pulled > HATCH_PULL_M) main.post { Game.requestSurface() }
                 }
-                main.post { Game.tick(dt) }
+                // v0.6.0: one tick waiting on the main thread at most (2026-11-24, 奇峰绝壁 on the emulator: queued frames held
+                // up input until the system said 无响应). Time not yet run is carried over.
+                pendingDt[0] += dt
+                if (!pending.getAndSet(true)) {
+                    val d = pendingDt[0].coerceAtMost(0.1)
+                    pendingDt[0] = 0.0
+                    main.post { try { Game.tick(d) } finally { pending.set(false) } }
+                }
                 synchronized(Game.lock) {
                     val p = Game.play
                     if (p != null) { v.sync(p, dt); tank.sync(p, dt) }
@@ -338,6 +357,14 @@ fun DeepStage() {
                         val depth = 1.0 - p.sub.at.y / com.vrgames.deepsea.core.Sea.H
                         os.frame(dt, seat.eye, depth, COCKPIT_SCALE * c.y, motion.speed, CabinMotion.SCALE * c.x, CabinMotion.SCALE * (c.y - Dive.START.y))
                         motor[0]?.speed(p.sub.speed / Dive.MAX_SPEED)
+                        // v0.6.0: the deep heard and lit: the ambience swells with depth, the sun fades through the twilight to a sixth of itself (the animals to photograph must stay visible).
+                        ambience[0]?.speed(depth)
+                        sunRef[0]?.components?.get(DirectionalLightComponent::class.java)?.let { l ->
+                            val want = (1000 * (1 - depth / 0.6).coerceIn(0.15, 1.0)).toFloat()
+                            if (kotlin.math.abs(l.intensity - want) > 10f) l.intensity = want
+                        }
+                        sounds.frame(dt, depth, p.sub.lamp, motion.pulling, os.passing)?.let { (sfx, at) -> main.post { cabinSound[0]?.play(sfx, at) } }
+                        Game.debugVisitor?.let { id -> Game.debugVisitor = null; os.callVisitor(id.ifBlank { null }) }
                         val speedText = "航速 ${"%.1f".format(motion.knots())} 节 ${motion.arrow()}".trim()
                         if (speedText != Game.cabinSpeed) main.post { Game.cabinSpeed = speedText }
                         // Logs for the emulator check: the specks against the sub, the sea drawing in and out.
@@ -366,14 +393,19 @@ private val TEXTURES = listOf("sand")
 /** v0.5.2: the cabin's panels, put in the world once; [Seat.place] keeps them where core.CabinLayout says. */
 private fun attach(seat: Seat, a: SpatialViewAttachments, panels: HashMap<String, Entity>) {
     val world = seat.world ?: return
-    for (id in listOf(PANEL_CABIN, PANEL_CABIN_CONSOLE, PANEL_CABIN_LAMP, PANEL_CABIN_COPY)) {
+    for (id in listOf(PANEL_CABIN, PANEL_CABIN_CONSOLE, PANEL_CABIN_LAMP, PANEL_CABIN_COPY, PANEL_CABIN_GAUGES)) {
         val e = a.entity(id) ?: continue
         if (panels[id] === e) continue
         panels[id] = e
         world.addChild(e)
         // Flat on the deck, with its tilt (the old card stood upright-ish and half of it sank into the console); the
         // console's copy stands upright at the left, facing the eyes.
-        e.transform().eulerAngles = if (id == PANEL_CABIN_COPY) EulerAngles(0f, CabinLayout.COPY_YAW.toFloat(), 0f) else EulerAngles(CabinLayout.PANEL_TILT.toFloat(), 0f, 0f)
+        e.transform().eulerAngles = when (id) {
+            PANEL_CABIN_COPY -> EulerAngles(0f, CabinLayout.COPY_YAW.toFloat(), 0f)
+            // v0.7.0: the instrument screen behind the right desk, leaning back, facing the eyes.
+            PANEL_CABIN_GAUGES -> EulerAngles(com.vrgames.deepsea.core.CabinDecor.GAUGES_PITCH.toFloat(), (-com.vrgames.deepsea.core.CabinDecor.WING_YAW).toFloat(), 0f)
+            else -> EulerAngles(CabinLayout.PANEL_TILT.toFloat(), 0f, 0f)
+        }
         if (id == PANEL_CABIN_COPY) e.enabled = false
     }
     seat.place(panels)
@@ -429,6 +461,7 @@ private class Seat {
             if (copyShown != want) { copyShown = want; e.enabled = want }
         }
         tank?.let { val r = CabinLayout.tankRoot(); it.setPos(Vector3(r.x.toFloat(), (eyeY + r.y).toFloat(), r.z.toFloat())) }
+        panels[PANEL_CABIN_GAUGES]?.let { e -> val q = com.vrgames.deepsea.core.CabinDecor.GAUGES.at; e.setPos(Vector3(q.x.toFloat(), (eyeY + q.y).toFloat(), q.z.toFloat())) }
     }
 
     /**
@@ -559,3 +592,42 @@ private const val HATCH_PULL_M = 0.07
 // The 2026-11-08 device test: the cards and the tank 18 cm farther and higher (the tank through its taller plinth).
 private const val FARTHER = 0.18f
 private const val LIFT = 0.18f
+
+/**
+ * v0.6.0 (PICO 1124: 「全沉浸模式下环境氛围感和沉浸感不够」): what is heard in the cabin besides the motor and the ambience —
+ * the sonar's ping every [PING_S] s below the sunlit zone, a whale calling far off now and then in the twilight and
+ * midnight zones, the hull creaking under the pressure deeper down, bubbles as the sub speeds up and when an animal passes.
+ * One sound a frame at most; returns it with where it comes from (cabin frame, about the eyes), or null.
+ */
+private class CabinSounds {
+    private var ping = 4.0
+    private var whale = 20.0
+    private var creak = 15.0
+    private var wasPulling = false
+    private var lastPassing: String? = null
+    private val rnd = java.util.Random()
+
+    fun frame(dt: Double, depth: Double, lamp: Boolean, pulling: Boolean, passing: String?): Pair<com.vrgames.deepsea.render.Sfx, Vector3>? {
+        ping -= dt; whale -= dt; creak -= dt
+        val startPull = pulling && !wasPulling
+        wasPulling = pulling
+        val newVisitor = passing != null && passing != lastPassing
+        lastPassing = passing
+        if (startPull || newVisitor) return com.vrgames.deepsea.render.Sfx.BUBBLES to Vector3(0f, -0.6f, -1.6f)
+        if (depth > 0.25 && ping <= 0) { ping = PING_S; return com.vrgames.deepsea.render.Sfx.PING to Vector3(0f, 0.2f, -0.6f) }
+        if (depth in 0.2..0.85 && whale <= 0) {
+            whale = 40.0 + 30 * rnd.nextDouble()
+            val side = if (rnd.nextBoolean()) 1f else -1f
+            return com.vrgames.deepsea.render.Sfx.WHALE to Vector3(side * 6f, 1f, -6f)
+        }
+        if (depth > 0.4 && creak <= 0) {
+            creak = 18.0 + 20 * rnd.nextDouble() - 8 * depth
+            return com.vrgames.deepsea.render.Sfx.CREAK to Vector3((rnd.nextDouble() * 2 - 1).toFloat(), 0.6f, -0.4f)
+        }
+        return null
+    }
+
+    companion object {
+        const val PING_S = 9.0
+    }
+}

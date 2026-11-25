@@ -18,6 +18,10 @@ enum class Sfx(val file: String, val volume: Float) {
     GOAL("goal", 0.8f),
     FANFARE("fanfare", 0.9f),
     LOSE("lose", 0.8f),
+    /** v0.6.0, the cabin (tools/make_sfx_060.py): a whale calling far off, the hull creaking under pressure, bubbles. */
+    WHALE("whale", 0.7f),
+    CREAK("creak", 0.55f),
+    BUBBLES("bubbles", 0.45f),
 }
 
 /** One emitter per clip, on [parent]: the same sound again restarts it. Positions in the board's frame. */

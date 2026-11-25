@@ -51,6 +51,8 @@ const val PANEL_CABIN = "cabin"
 const val PANEL_CABIN_CONSOLE = "cabin_console"
 const val PANEL_CABIN_LAMP = "cabin_lamp"
 const val PANEL_CABIN_COPY = "cabin_copy"
+/** v0.7.0: the live instrument screen behind the cabin's right desk (no keys). */
+const val PANEL_CABIN_GAUGES = "cabin_gauges"
 
 val Ink = Color(0xFFEAF6FF)
 val Lamp = Color(0xFFFFD86B)
@@ -58,6 +60,8 @@ val Sky = Color(0xFF7FD0F0)
 val Mint = Color(0xFF9FE3A8)
 val Dim = Color(0xFFA8BCCC)
 val Alarm = Color(0xFFFF7B5C)
+/** v0.7.0: the cabin's real controls, and only they (core.CabinDecor.ORANGE). */
+val Orange = Color(0xFFFF8C1F)
 private val PanelBg = Color(0xEA081A2C)
 /** Window backdrop: the system glass can be light, and every text color here is meant for dark. */
 val WindowBg = Color(0xF2081A2C)
@@ -357,14 +361,14 @@ fun CabinPanel(c: PhysicalLengthConverter) {
     Game.version
     val p = Game.play
     DeckPanel(c, CabinLayout.SCREEN) {
-        if (p == null) { BigKey(c, "回到舱外视角") { Game.requestSurface() }; return@DeckPanel }
+        if (p == null) { BigKey(c, "回到舱外视角", Orange) { Game.requestSurface() }; return@DeckPanel }
         val f = p.follow
         Text(if (f != null) "正在跟着：${f.sp.name}" else "舱内视角", fontSize = c.sz(0.022f), color = Lamp, maxLines = 1)
         Text("深度 ${Sea.meters(p.sub.at.y)} 米 · ${Sea.zoneAt(p.sub.at.y).title}　电量 ${(p.battery / p.stage.battery * 100).toInt()}%", fontSize = c.sz(0.016f), color = Ink, maxLines = 1)
         Text(Game.cabinSpeed, fontSize = c.sz(0.018f), color = Sky, maxLines = 1)
         val n = Game.note
         Text(n ?: "右手边的小水缸里就是这只潜水器：捏缸里的水或动物，潜水器就开过去。", fontSize = c.sz(0.0145f), color = if (n != null) Lamp else Dim, maxLines = 2)
-        BigKey(c, "回到舱外视角") { Game.requestSurface() }
+        BigKey(c, "回到舱外视角", Orange) { Game.requestSurface() }
         Text("也可以伸手捏住头顶舱盖的把手往下拉；一关结束也会自动回到舱外。", fontSize = c.sz(0.013f), color = Dim, maxLines = 2)
     }
 }
@@ -374,7 +378,7 @@ fun CabinPanel(c: PhysicalLengthConverter) {
 fun CabinConsoleKey(c: PhysicalLengthConverter) {
     Game.version
     DeckPanel(c, CabinLayout.CONSOLE_KEY) {
-        BigKey(c, when { Game.consoleBusy -> "请稍候…"; Game.consoleUp -> "收起控制台"; else -> "打开控制台" }) { Game.toggleConsole() }
+        BigKey(c, when { Game.consoleBusy -> "请稍候…"; Game.consoleUp -> "收起控制台"; else -> "打开控制台" }, Orange) { Game.toggleConsole() }
         Text(if (Game.cabinConsoleCopy) "控制台在你左边" else "关卡、照片、菜单都在控制台", fontSize = c.sz(0.0125f), color = Dim, maxLines = 1)
     }
 }
@@ -386,7 +390,7 @@ fun CabinLampKey(c: PhysicalLengthConverter) {
     val p = Game.play
     val on = p?.sub?.lamp == true
     DeckPanel(c, CabinLayout.LAMP_KEY) {
-        BigKey(c, if (on) "探照灯：开" else "探照灯：关", if (on) Lamp else Sky) { Game.lamp() }
+        BigKey(c, if (on) "探照灯：开" else "探照灯：关", if (on) Orange else Color(0xFFC86A14)) { Game.lamp() }
         val sunny = p != null && Sea.zoneAt(p.sub.at.y) == com.vrgames.deepsea.core.Zone.SUN
         Text(
             when { on && sunny -> "阳光带看得清：可以关灯省电"; on -> "灯光照在舷窗前"; else -> "点一下开灯" },
@@ -428,5 +432,35 @@ fun CabinConsoleCopy(c: PhysicalLengthConverter, toggle: (String) -> Unit, versi
             }
         }
         MenuPanel(c, toggle, faceMe = {}, quit = { Game.quitApp("退出（舱内控制台）") }, version = version)
+    }
+}
+
+/**
+ * v0.7.0: the instrument screen behind the right desk: what a pilot watches, live — depth and the rate of descent, the
+ * water's pressure and temperature outside, the cabin's oxygen, CO2 and pressure, the battery. No keys: green and cyan on
+ * black, nothing orange (only the real controls are).
+ */
+@Composable
+fun CabinGauges(c: PhysicalLengthConverter) {
+    Game.version
+    val p = Game.play
+    val shape = RoundedCornerShape(c.m(0.006f))
+    val w = com.vrgames.deepsea.core.CabinDecor.GAUGES.size.toFloat()
+    val h = com.vrgames.deepsea.core.CabinDecor.GAUGES_H.toFloat()
+    val green = Color(0xFF6BF0A0)
+    val cyan = Color(0xFF7FE0F5)
+    Column(
+        Modifier.width(c.m(w)).height(c.m(h)).clip(shape).background(Color(0xFF02080A)).border(c.m(0.003f), Color(0xFF3A444E), shape)
+            .padding(horizontal = c.m(0.008f), vertical = c.m(0.006f)),
+        verticalArrangement = Arrangement.spacedBy(c.m(0.002f), Alignment.CenterVertically),
+    ) {
+        val m = p?.let { Sea.meters(it.sub.at.y).toDouble() } ?: 0.0
+        val rate = Game.descentRate
+        val tempC = when { m < 100 -> 24 - m * 0.08; m < 1000 -> 16 - (m - 100) * 0.0133; else -> (4 - (m - 1000) * 0.0005).coerceAtLeast(1.6) }
+        val t = Game.clockS
+        Text("深度 ${"%.0f".format(m)} m  ${if (rate >= 0) "↓" else "↑"}${"%.1f".format(kotlin.math.abs(rate))} m/s", fontSize = c.sz(0.0115f), color = green, maxLines = 1)
+        Text("舱外 ${"%.2f".format(m / 100.0)} MPa  ${"%.1f".format(tempC)}°C", fontSize = c.sz(0.0105f), color = cyan, maxLines = 1)
+        Text("O₂ ${"%.1f".format(20.8 + 0.15 * kotlin.math.sin(t * 0.21))}%  CO₂ ${"%.2f".format(0.32 + 0.05 * kotlin.math.sin(t * 0.13 + 1))}%", fontSize = c.sz(0.0105f), color = cyan, maxLines = 1)
+        Text("舱压 1.00 atm  电量 ${if (p != null) (p.battery / p.stage.battery * 100).toInt() else 100}%", fontSize = c.sz(0.0105f), color = green, maxLines = 1)
     }
 }

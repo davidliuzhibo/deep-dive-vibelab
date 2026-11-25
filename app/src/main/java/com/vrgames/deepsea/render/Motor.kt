@@ -10,7 +10,15 @@ import android.util.Log
  * (assets/audio/motor.wav, the 4-second hum loop made for 引力弹弓 by its tools/sfx.py, no new download) that grows
  * louder ([QUIET]..[LOUD]) and higher ([SLOW]..[FAST] times its pitch) with the sub's speed.
  */
-class Motor(context: Context) {
+class Motor(
+    context: Context,
+    /** v0.6.0: the same loop player also plays the deep's ambience (audio/deep_amb.wav). */
+    private val ASSET: String = "audio/motor.wav",
+    private val QUIET: Float = 0.1f,
+    private val LOUD: Float = 0.6f,
+    private val SLOW: Float = 0.85f,
+    private val FAST: Float = 1.25f,
+) {
     private val pool: SoundPool = SoundPool.Builder().setMaxStreams(1)
         .setAudioAttributes(AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_GAME).setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION).build())
         .build()
@@ -64,10 +72,5 @@ class Motor(context: Context) {
 
     companion object {
         private const val TAG = "DeepMotor"
-        private const val ASSET = "audio/motor.wav"
-        const val QUIET = 0.1f
-        const val LOUD = 0.6f
-        const val SLOW = 0.85f
-        const val FAST = 1.25f
     }
 }

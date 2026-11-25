@@ -19,7 +19,7 @@ import kotlin.math.sin
  * of sunlight slanting down near the surface and fading with depth, a school of silver fish wheeling past the windows,
  * bubbles going up, the sea floor coming up below as the sub nears the bottom. All centred on the player's eyes.
  */
-class OpenSea(sand: TextureResource?) {
+class OpenSea(sand: TextureResource?, private val models: Map<String, Entity> = emptyMap()) {
     val root = Entity()
     private val shafts = ArrayList<Pair<Entity, UnlitMaterial>>()
     /** v0.5.2: each shaft's place in the sea (x across, z ahead), which the sub's sideways place shifts. */
@@ -38,6 +38,27 @@ class OpenSea(sand: TextureResource?) {
     private val floor = model(MeshResource.createPlane(60f, 60f, 0f), floorMat).apply { transform().eulerAngles = EulerAngles(-90f, 0f, 0f) }
     private val rocks = Entity()
     private var clock = 0.0
+    /** v0.6.0: the sea's own materials, their glow-without-light turned down in the deep so the lamp is what shows them. */
+    private var silverMat: PhysicallyBasedMaterial? = null
+    private var stoneMat: PhysicallyBasedMaterial? = null
+    private var dimShown = -1.0
+
+    /**
+     * v0.6.0 (PICO 1124: 「全沉浸模式下环境氛围感和沉浸感不够」): now and then a big animal of the zone the sub is in swims
+     * past the front window, life size, 4–7 m out: a manta or a leatherback in the sunlit zone, deep-sea jellies drifting
+     * or a school of lanternfish in the twilight, a giant squid in the midnight zone, an anglerfish with its lure lit in the
+     * abyss. Each crosses in about 16 s; the next comes [VISIT_GAP] s after.
+     */
+    private class Visitor(val id: String, val root: Entity, val count: Int, val size: Float, val glows: Boolean, val dur: Double)
+    private val visitors = HashMap<String, Visitor>()
+    private var visiting: Visitor? = null
+    private var visitT = 0.0
+    private var visitDir = 1.0
+    private var visitZ = -5.0
+    private var visitY = 0.0
+    private var nextVisit = 12.0
+    /** The id of the animal now passing (for the log and the sounds), or null. */
+    var passing: String? = null; private set
 
     init {
         root.addChild(floor)
@@ -63,7 +84,7 @@ class OpenSea(sand: TextureResource?) {
         }
         // A school of small silver fish.
         val body = MeshResource.createCapsule(0.16f, 0.025f).shared()
-        val silver = pbr(color(0.72f, 0.78f, 0.84f), metallic = 0.7f, roughness = 0.25f).shared()
+        val silver = pbr(color(0.72f, 0.78f, 0.84f), metallic = 0.7f, roughness = 0.25f).shared().also { silverMat = it }
         for (k in 0 until 42) {
             val f = Entity()
             f.addChild(model(body, silver).apply { transform().eulerAngles = EulerAngles(0f, 0f, 90f) })
@@ -71,7 +92,7 @@ class OpenSea(sand: TextureResource?) {
             fish += f
         }
         // Rocks on the floor, near and far.
-        val stone = pbr(color(0.24f, 0.26f, 0.28f), roughness = 0.95f).shared()
+        val stone = pbr(color(0.24f, 0.26f, 0.28f), roughness = 0.95f).shared().also { stoneMat = it }
         val ball = MeshResource.createSphere(1f).shared()
         for (k in 0 until 26) {
             val a = rnd.nextDouble() * 2 * Math.PI
@@ -85,6 +106,101 @@ class OpenSea(sand: TextureResource?) {
             }
             rocks.addChild(rock)
             rockAt += Rock(rock, r * sin(a), -r * cos(a), maxOf(sx, sz))
+        }
+        buildVisitors()
+    }
+
+    private fun buildVisitors() {
+        val glowMat = glow(color(0.35f, 0.95f, 0.85f, 0.9f)).shared()
+        val lureMat = glow(color(1f, 0.85f, 0.45f, 1f)).shared()
+        val spec = listOf(
+            // id, how many, size (m, longest side), glows, seconds to cross
+            Triple("manta", 1, 3.6f) to (false to 17.0), Triple("turtle", 1, 1.7f) to (false to 15.0),
+            Triple("jelly", 6, 0.7f) to (true to 22.0), Triple("lantern", 18, 0.22f) to (true to 12.0),
+            Triple("squid", 1, 6.5f) to (false to 18.0), Triple("angler", 1, 1.1f) to (true to 20.0),
+        )
+        for ((t, g) in spec) {
+            val (id, count, size) = t
+            val m = models[id] ?: continue
+            val r = Entity()
+            for (k in 0 until count) {
+                // holder: where it is and which way it goes; banker: tipped to show its back, and the wingbeat; body: the model
+                // turned to face +x (render.Looks).
+                val holder = Entity()
+                val banker = Entity()
+                val body = m.clone(Entity.CloneOptions(true, true)) ?: continue
+                body.setScale(size)
+                body.transform().eulerAngles = EulerAngles(0f, Looks.yaw(id), 0f)
+                banker.addChild(body)
+                holder.addChild(banker)
+                if (g.first) banker.addChild(model(MeshResource.createSphere(1f).shared(), if (id == "angler") lureMat else glowMat).apply {
+                    setScale(if (id == "angler") 0.05f else size * 0.16f)
+                    setPos(Vector3(if (id == "angler") size * 0.55f else 0f, size * (if (id == "jelly") 0.55f else 0.3f), 0f))
+                })
+                r.addChild(holder)
+            }
+            r.enabled = false
+            root.addChild(r)
+            visitors[id] = Visitor(id, r, count, size, g.first, g.second)
+        }
+    }
+
+    private fun visitorsFor(depth: Double): List<String> = when {
+        depth < 0.25 -> listOf("manta", "turtle")
+        depth < 0.5 -> listOf("jelly", "lantern")
+        depth < 0.75 -> listOf("squid")
+        else -> listOf("angler")
+    }
+
+    /** Debug: the next visitor now ([id] or the zone's own). */
+    fun callVisitor(id: String?) {
+        visiting?.root?.enabled = false
+        visiting = null; passing = null
+        nextVisit = 0.0; forced = id
+    }
+    private var forced: String? = null
+
+    private fun visit(dt: Double, eyeY: Float, depth: Double) {
+        val v = visiting
+        if (v == null) {
+            nextVisit -= dt
+            if (nextVisit > 0) return
+            val pick = forced ?: visitorsFor(depth).filter { visitors.containsKey(it) }.randomOrNull() ?: return
+            forced = null
+            val nv = visitors[pick] ?: return
+            visiting = nv; visitT = 0.0
+            visitDir = if (Math.random() < 0.5) 1.0 else -1.0
+            visitZ = -(4.0 + 3.0 * Math.random()) - nv.size * 0.3
+            visitY = -0.4 + 1.2 * Math.random()
+            nv.root.enabled = true
+            passing = pick
+            android.util.Log.i("DeepCabin", "visitor $pick passing, dir $visitDir, ${-visitZ} m out, ${nv.count} of them, ${nv.size} m long")
+            return
+        }
+        visitT += dt
+        val u = visitT / v.dur
+        if (u >= 1) {
+            v.root.enabled = false
+            visiting = null; passing = null
+            nextVisit = VISIT_GAP * (0.8 + 0.4 * Math.random())
+            return
+        }
+        // Across from one side to the other, easing in and out, a slow rise and fall on the way.
+        val span = 9.0 + v.size
+        val x = visitDir * (-span + 2 * span * u)
+        val kids = v.root.getChildren()
+        for ((k, h) in kids.withIndex()) {
+            val off = if (v.count == 1) Vec3.ZERO else Vec3(1.1 * sin(k * 2.3) * v.size * 3, 0.9 * sin(k * 1.7) * v.size * 2.5 + 0.15 * sin(clock * 0.8 + k), 0.8 * cos(k * 1.1) * v.size * 3)
+            val bob = 0.25 * sin(clock * 0.6 + k) * (if (v.id == "jelly") 2.0 else 1.0)
+            h.setPos(Vector3((x + off.x).toFloat(), (eyeY + visitY + off.y + bob).toFloat(), (visitZ + off.z).toFloat()))
+            // Facing the way it goes; tipped so its back shows toward the cabin (the holder's x turns with it, so the sign
+            // follows the way), the manta's wings beating as a slow roll.
+            val flap = if (v.id == "manta") 10 * sin(clock * 1.6) else if (v.id == "jelly") 0.0 else 3 * sin(clock * 3 + k)
+            h.transform().eulerAngles = EulerAngles(0f, if (visitDir > 0) 0f else 180f, 0f)
+            h.getChildren().firstOrNull()?.transform()?.eulerAngles = EulerAngles(((Looks.bank(v.id) * 0.5 + flap) * visitDir).toFloat(), 0f, 0f)
+            // Fade in and out at the ends of the crossing.
+            val f = (minOf(u, 1 - u) * 8).coerceIn(0.0, 1.0)
+            h.transform().setScaleVector(Vector3((0.2 + 0.8 * f).toFloat()))
         }
     }
 
@@ -150,6 +266,16 @@ class OpenSea(sand: TextureResource?) {
             f.transform().eulerAngles = EulerAngles(0f, Math.toDegrees(-ph).toFloat() + 180f, (8 * sin(clock * 6 + k)).toFloat())
             f.transform().setScaleVector(Vector3(fade.toFloat()))
         }
+        visit(dt, eyeY, depth)
+        // v0.6.0: in the deep, the fish, the rocks and the floor show by the lamp, not by a glow of their own.
+        val dim = (1 - 0.85 * ((depth - 0.2) / 0.5).coerceIn(0.0, 1.0))
+        if (kotlin.math.abs(dim - dimShown) > 0.02) {
+            dimShown = dim
+            val a = (0.45 * dim).toFloat()
+            silverMat?.setEmissiveColor(color(0.72f * a, 0.78f * a, 0.84f * a))
+            stoneMat?.setEmissiveColor(color(0.24f * a, 0.26f * a, 0.28f * a))
+            floorMat.setEmissiveColor(color(0.05f * dim.toFloat(), 0.07f * dim.toFloat(), 0.09f * dim.toFloat()))
+        }
         // Bubbles past the windows, more when the sub moves.
         if ((clock * (3 + 6 * moving)).toInt() != ((clock - dt) * (3 + 6 * moving)).toInt()) {
             val r = java.util.Random()
@@ -172,5 +298,7 @@ class OpenSea(sand: TextureResource?) {
         const val ROCK_PERIOD = 50.0
         const val SCHOOL_PERIOD_X = 24.0
         const val SCHOOL_PERIOD_Y = 9.0
+        /** v0.6.0: seconds between two big animals passing the windows (about). */
+        const val VISIT_GAP = 30.0
     }
 }

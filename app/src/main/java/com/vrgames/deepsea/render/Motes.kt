@@ -20,10 +20,24 @@ import kotlin.math.hypot
  * speed each draws out into a streak along its way, up to [STREAK] m long. Replaces the old snow, which drifted the same
  * way whatever the sub did.
  */
-class Motes(mesh: MeshResource, material: Material) {
+class Motes(
+    mesh: MeshResource,
+    material: Material,
+    /** v0.6.0: the same specks also make the far layer and the glowing plankton (twinkling), each with its own name. */
+    name: String = "cabin_motes",
+    private val COUNT: Int = 300,
+    private val NEAR: Double = 1.7,
+    private val FAR: Double = 7.7,
+    private val HALF_X: Double = 5.0,
+    private val HALF_Y: Double = 3.0,
+    private val sizeMin: Double = 0.006,
+    private val sizeMax: Double = 0.014,
+    private val twinkle: Boolean = false,
+) {
     val entity: Entity = ModelEntity(mesh, material)
-    private val names = Array(COUNT) { "mote$it" }
-    private val instances = MeshInstancesResource.create("cabin_motes", names.map { MeshInstancesResource.Instance(it, HIDDEN) })
+    private val names = Array(COUNT) { "$name$it" }
+    private val instances = MeshInstancesResource.create(name, names.map { MeshInstancesResource.Instance(it, HIDDEN) })
+    private val phase = DoubleArray(COUNT)
     private val px = DoubleArray(COUNT)
     private val py = DoubleArray(COUNT)
     private val pz = DoubleArray(COUNT)
@@ -49,7 +63,8 @@ class Motes(mesh: MeshResource, material: Material) {
                 pz[i] = -(NEAR + r.nextDouble() * (FAR - NEAR))
             }
             py[i] = (r.nextDouble() * 2 - 1) * HALF_Y
-            size[i] = (0.006 + 0.008 * r.nextDouble()).toFloat()
+            size[i] = (sizeMin + (sizeMax - sizeMin) * r.nextDouble()).toFloat()
+            phase[i] = r.nextDouble() * 100
         }
     }
 
@@ -70,7 +85,8 @@ class Motes(mesh: MeshResource, material: Material) {
         for (i in 0 until COUNT) {
             px[i] = CabinMotion.wrap(px[i] + dx, HALF_X * 2)
             py[i] = CabinMotion.wrap(py[i] + dy - sink, HALF_Y * 2)
-            val d = size[i]
+            // Plankton flashes now and then, dark between (v0.6.0).
+            val d = if (twinkle) size[i] * (kotlin.math.sin(clock * (0.7 + (i % 7) * 0.23) + phase[i]).let { w -> (w * w * w * w).toFloat() }) else size[i]
             // A sphere of radius d, drawn out along the way it goes into a streak [streak] long.
             val len = maxOf(d, (streak / 2).toFloat())
             instances.update(
@@ -81,11 +97,6 @@ class Motes(mesh: MeshResource, material: Material) {
     }
 
     companion object {
-        const val COUNT = 300
-        const val HALF_X = 5.0
-        const val HALF_Y = 3.0
-        const val NEAR = 1.7
-        const val FAR = 7.7
         /** Longest streak (m), and how many seconds of travel a streak shows. */
         const val STREAK = 0.15
         const val STREAK_S = 0.25

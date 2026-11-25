@@ -7,6 +7,7 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import com.pico.spatial.core.math.Vector3
+import com.vrgames.deepsea.core.Sea
 import com.vrgames.deepsea.core.Dive
 import com.vrgames.deepsea.core.Ev
 import com.vrgames.deepsea.core.Solver
@@ -23,6 +24,8 @@ import com.vrgames.deepsea.render.Target
  * steps it and turns its events into notes, sounds and flashes. Stars and the album are saved.
  */
 object Game {
+    /** v0.6.0 debug: call the next big animal past the windows now ("" = the zone's own, or an id). */
+    @Volatile var debugVisitor: String? = null
     private const val PREFS = "deepsea"
     private const val TAG = "DeepGame"
 
@@ -50,6 +53,7 @@ object Game {
      */
     val canCabin get() = true
     private var cabinHintDue = false
+    private var orangeTold = false
 
     /** v0.5: in the deep (the Full Space stage is open). */
     var diving by mutableStateOf(false)
@@ -380,12 +384,23 @@ object Game {
         version++
     }
 
+    /** v0.7.0: the cabin's instrument screen — seconds running, and the rate of descent (m/s, + down), smoothed. */
+    var clockS = 0.0; private set
+    var descentRate = 0.0; private set
+    private var lastMeters = Double.NaN
+
     fun tick(dt0: Double) {
         val dt = dt0 * timeScale
+        clockS += dt0
         val p = play ?: return
+        val m = Sea.meters(p.sub.at.y).toDouble()
+        if (!lastMeters.isNaN() && dt0 > 1e-4) descentRate += ((m - lastMeters) / dt0 - descentRate) * (dt0 / 1.2).coerceAtMost(1.0)
+        lastMeters = m
         if (phase == Phase.SHOW) view?.show(dt)
         if (phase != Phase.PLAYING) return
         if (cabinHintDue && speaking == null) { cabinHintDue = false; speak("cockpit_hint"); version++ }
+        // v0.7.0: the first time in the cabin each launch: which of all these are the controls.
+        if (cockpit && diving && !orangeTold && speaking == null) { orangeTold = true; speak("cabin_orange"); say("舱里亮着橙光的，才是你能操作的：面前的三个键、头顶的上浮拉手、右手边的小水缸。其余都是潜水器的设备。"); version++ }
         // Following nothing any more (a new order): the cabin view has nothing to watch, back to the overview.
         if (cockpit && !diving && p.follow == null && p.job == null) { cockpit = false; say("没有在跟随的动物了，回到舱外视角。"); version++ }
         val b = bot
@@ -446,6 +461,7 @@ object Game {
     private var appContext: Context? = null
 
     fun speak(id: String) {
+        Log.i(TAG, "speak $id")
         stopNarration()
         val c = appContext ?: return
         runCatching {
